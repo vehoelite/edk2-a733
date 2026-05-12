@@ -25,9 +25,21 @@
   UefiLib
   DebugLib
   BootLogoLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DevicePathLib
+  PcdLib
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
 
 [Guids]
+  gEfiGlobalVariableGuid
+  gEdkiiSerialPortLibVendorGuid
 
 [Protocols]
+  gEfiSerialIoProtocolGuid
+  gEfiDevicePathProtocolGuid
+  gEfiLoadedImageProtocolGuid
+  gEfiFirmwareVolume2ProtocolGuid
 
 [Pcd]

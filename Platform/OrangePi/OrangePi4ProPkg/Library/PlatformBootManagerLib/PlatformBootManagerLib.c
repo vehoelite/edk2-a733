@@ -1,18 +1,61 @@
 /** @file
-  Minimal PlatformBootManagerLib for Orange Pi 4 Pro.
+  PlatformBootManagerLib for Orange Pi 4 Pro (Allwinner A733).
 
-  Registers a UEFI Shell boot option and falls through to the
-  standard BDS boot device selection.
+  Wires the serial UART as ConOut/ConIn/ErrOut, connects all controllers,
+  and registers a UEFI Shell boot option from the firmware volume.
 
-  Copyright (c) 2024, carpi-os contributors.
+  Copyright (c) 2024-2026, carpi-os contributors.
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
 #include <Uefi.h>
 #include <Library/UefiBootManagerLib.h>
-#include <Library/BootLogoLib.h>
 #include <Library/UefiLib.h>
 #include <Library/DebugLib.h>
+#include <Library/PcdLib.h>
+#include <Library/MemoryAllocationLib.h>
+#include <Library/BaseMemoryLib.h>
+#include <Library/DevicePathLib.h>
+#include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
+#include <Protocol/SerialIo.h>
+#include <Protocol/DevicePath.h>
+#include <Protocol/LoadedImage.h>
+#include <Protocol/FirmwareVolume2.h>
+#include <Guid/SerialPortLibVendor.h>
+#include <Guid/GlobalVariable.h>
+
+#pragma pack(1)
+typedef struct {
+  VENDOR_DEVICE_PATH        SerialDxe;
+  UART_DEVICE_PATH          Uart;
+  VENDOR_DEVICE_PATH        TermType;
+  EFI_DEVICE_PATH_PROTOCOL  End;
+} PLATFORM_SERIAL_CONSOLE;
+#pragma pack()
+
+#define PLATFORM_PC_ANSI_GUID \
+  { 0xe0c14753, 0xf9be, 0x11d2, { 0x9a, 0x0c, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d } }
+
+STATIC PLATFORM_SERIAL_CONSOLE  mSerialConsole = {
+  {
+    { HARDWARE_DEVICE_PATH, HW_VENDOR_DP,
+      { (UINT8)sizeof (VENDOR_DEVICE_PATH), 0 } },
+    EDKII_SERIAL_PORT_LIB_VENDOR_GUID
+  },
+  {
+    { MESSAGING_DEVICE_PATH, MSG_UART_DP,
+      { (UINT8)sizeof (UART_DEVICE_PATH), 0 } },
+    0, 115200, 8, 1, 1
+  },
+  {
+    { MESSAGING_DEVICE_PATH, MSG_VENDOR_DP,
+      { (UINT8)sizeof (VENDOR_DEVICE_PATH), 0 } },
+    PLATFORM_PC_ANSI_GUID
+  },
+  { END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE,
+    { (UINT8)sizeof (EFI_DEVICE_PATH_PROTOCOL), 0 } }
+};
 
 VOID
 EFIAPI
@@ -20,7 +63,106 @@ PlatformBootManagerBeforeConsole (
   VOID
   )
 {
-  // Nothing platform-specific before console is attached.
+  EFI_DEVICE_PATH_PROTOCOL  *Dp;
+
+  Dp = (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole;
+  EfiBootManagerUpdateConsoleVariable (ConOut, Dp, NULL);
+  EfiBootManagerUpdateConsoleVariable (ConIn,  Dp, NULL);
+  EfiBootManagerUpdateConsoleVariable (ErrOut, Dp, NULL);
+}
+
+STATIC
+EFI_STATUS
+RegisterFvBootOption (
+  IN  EFI_GUID  *FileGuid,
+  IN  CHAR16    *Description,
+  IN  UINT32    Attributes
+  )
+{
+  EFI_STATUS                         Status;
+  UINTN                              HandleCount;
+  EFI_HANDLE                         *Handles;
+  UINTN                              Index;
+  EFI_FIRMWARE_VOLUME2_PROTOCOL      *Fv;
+  EFI_DEVICE_PATH_PROTOCOL           *FvDp;
+  EFI_DEVICE_PATH_PROTOCOL           *FullDp;
+  MEDIA_FW_VOL_FILEPATH_DEVICE_PATH  FileNode;
+  EFI_BOOT_MANAGER_LOAD_OPTION       Option;
+  UINTN                              Size;
+  VOID                               *Buffer;
+  UINT32                             AuthStatus;
+  EFI_FV_FILETYPE                    FileType;
+  EFI_FV_FILE_ATTRIBUTES             FvAttribs;
+
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiFirmwareVolume2ProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiFirmwareVolume2ProtocolGuid,
+                    (VOID **)&Fv
+                    );
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+    Buffer    = NULL;
+    Size      = 0;
+    FileType  = EFI_FV_FILETYPE_APPLICATION;
+    FvAttribs = 0;
+    AuthStatus = 0;
+    Status = Fv->ReadFile (Fv, FileGuid, &Buffer, &Size, &FileType, &FvAttribs, &AuthStatus);
+    if (Buffer != NULL) {
+      FreePool (Buffer);
+    }
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiDevicePathProtocolGuid,
+                    (VOID **)&FvDp
+                    );
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    EfiInitializeFwVolDevicepathNode (&FileNode, FileGuid);
+    FullDp = AppendDevicePathNode (FvDp, (EFI_DEVICE_PATH_PROTOCOL *)&FileNode);
+    if (FullDp == NULL) {
+      continue;
+    }
+
+    Status = EfiBootManagerInitializeLoadOption (
+               &Option,
+               LoadOptionNumberUnassigned,
+               LoadOptionTypeBoot,
+               Attributes,
+               Description,
+               FullDp,
+               NULL,
+               0
+               );
+    if (!EFI_ERROR (Status)) {
+      EfiBootManagerAddLoadOptionVariable (&Option, (UINTN)-1);
+      EfiBootManagerFreeLoadOption (&Option);
+    }
+    FreePool (FullDp);
+    FreePool (Handles);
+    return EFI_SUCCESS;
+  }
+
+  FreePool (Handles);
+  return EFI_NOT_FOUND;
 }
 
 VOID
@@ -29,14 +171,16 @@ PlatformBootManagerAfterConsole (
   VOID
   )
 {
-  // Connect all drivers to all controllers.
-  EfiBootManagerConnectAll ();
+  EFI_GUID  ShellGuid = { 0x7C04A583, 0x9E3E, 0x4f1c,
+                          { 0xAD, 0x65, 0xE0, 0x52, 0x68, 0xD0, 0xB4, 0xD1 } };
 
-  // Process boot options from NVRAM.
+  Print (L"\r\nOrange Pi 4 Pro UEFI (Allwinner A733) - carpi-os edk2-a733\r\n");
+  Print (L"Press ESC for Boot Manager\r\n\r\n");
+
+  EfiBootManagerConnectAll ();
   EfiBootManagerRefreshAllBootOption ();
 
-  // Print a minimal banner.
-  Print (L"Orange Pi 4 Pro UEFI - carpi-os\n\r");
+  RegisterFvBootOption (&ShellGuid, L"UEFI Shell", LOAD_OPTION_ACTIVE);
 }
 
 VOID
@@ -45,7 +189,7 @@ PlatformBootManagerUnableToBoot (
   VOID
   )
 {
-  Print (L"Unable to boot. Dropping to UEFI shell.\n\r");
+  Print (L"Unable to boot. Dropping to UEFI shell.\r\n");
 }
 
 VOID
@@ -54,5 +198,5 @@ PlatformBootManagerWaitCallback (
   UINT16  TimeoutRemain
   )
 {
-  // No UI during boot timeout countdown.
+  Print (L".");
 }
