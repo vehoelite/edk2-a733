@@ -1,0 +1,11 @@
+# Build artifacts
+*.uimg
+*.fd
+*.bin
+Build/
+Conf/
+.vscode/
+
+# Editor scratch
+*.swp
+*.bak

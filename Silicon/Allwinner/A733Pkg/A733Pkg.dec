@@ -1,0 +1,34 @@
+## @file
+#  Allwinner A733 Silicon Package Declaration
+#
+#  Copyright (c) 2024, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION = 0x0001001C
+  PACKAGE_NAME      = A733Pkg
+  PACKAGE_GUID      = 4a733000-dead-beef-cafe-a733a733a733
+  PACKAGE_VERSION   = 0.1
+
+[Includes]
+  Include
+
+[Guids]
+  # {4a733001-dead-beef-cafe-a733a733a733}
+  gA733TokenSpaceGuid = { 0x4a733001, 0xdead, 0xbeef, { 0xca, 0xfe, 0xa7, 0x33, 0xa7, 0x33, 0xa7, 0x33 } }
+
+[PcdsFixedAtBuild]
+  # UART
+  gA733TokenSpaceGuid.PcdA733UartBase|0x02500000|UINT64|0x00000001
+  gA733TokenSpaceGuid.PcdA733UartClockHz|24000000|UINT32|0x00000002
+
+  # GICv3
+  gA733TokenSpaceGuid.PcdA733GicDistBase|0x03400000|UINT64|0x00000010
+  gA733TokenSpaceGuid.PcdA733GicRedistBase|0x03460000|UINT64|0x00000011
+
+  # System timer frequency
+  gA733TokenSpaceGuid.PcdA733TimerFrequencyHz|24000000|UINT32|0x00000020
+
+  # DRAM base (passed to EDK2 memory map)
+  gA733TokenSpaceGuid.PcdA733DramBase|0x40000000|UINT64|0x00000030

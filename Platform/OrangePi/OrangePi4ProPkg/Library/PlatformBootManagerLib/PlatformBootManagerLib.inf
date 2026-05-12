@@ -1,0 +1,33 @@
+## @file
+#  Minimal PlatformBootManagerLib for Orange Pi 4 Pro.
+#
+#  Copyright (c) 2024, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = PlatformBootManagerLib
+  FILE_GUID      = 3D4D8F5E-1A2B-4C3D-9E8F-7A6B5C4D3E2F
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS  = PlatformBootManagerLib|DXE_DRIVER
+
+[Sources]
+  PlatformBootManagerLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiBootManagerLib
+  UefiLib
+  DebugLib
+  BootLogoLib
+
+[Guids]
+
+[Protocols]
+
+[Pcd]

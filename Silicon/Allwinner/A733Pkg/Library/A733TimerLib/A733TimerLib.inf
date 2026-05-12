@@ -1,0 +1,29 @@
+## @file
+#  A733 ARM Generic Timer Library INF
+##
+
+[Defines]
+  INF_VERSION       = 0x0001001C
+  BASE_NAME         = A733TimerLib
+  FILE_GUID         = 4a733011-dead-beef-cafe-a733a733a733
+  MODULE_TYPE       = BASE
+  VERSION_STRING    = 0.1
+  LIBRARY_CLASS     = TimerLib
+  CONSTRUCTOR       = A733TimerConstructor
+
+[Sources]
+  A733TimerLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  ArmPkg/ArmPkg.dec
+  Silicon/Allwinner/A733Pkg/A733Pkg.dec
+
+[LibraryClasses]
+  ArmLib
+  BaseLib
+  PcdLib
+  DebugLib
+
+[FixedPcd]
+  gArmTokenSpaceGuid.PcdArmArchTimerFreqInHz

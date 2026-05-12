@@ -1,0 +1,28 @@
+## @file
+#  A733 NS16550 Serial Port Library INF
+##
+
+[Defines]
+  INF_VERSION    = 0x0001001C
+  BASE_NAME      = A733UartLib
+  FILE_GUID      = 4a733010-dead-beef-cafe-a733a733a733
+  MODULE_TYPE    = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS  = SerialPortLib
+
+[Sources]
+  A733UartLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Allwinner/A733Pkg/A733Pkg.dec
+
+[LibraryClasses]
+  IoLib
+  PcdLib
+
+[FixedPcd]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialRegisterBase
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialClockRate
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialBaudRate

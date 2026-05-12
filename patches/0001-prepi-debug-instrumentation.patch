@@ -1,0 +1,268 @@
+diff --git a/ArmPlatformPkg/MemoryInitPei/MemoryInitPeiLib.c b/ArmPlatformPkg/MemoryInitPei/MemoryInitPeiLib.c
+index d6a6ffe..3ce9447 100644
+--- a/ArmPlatformPkg/MemoryInitPei/MemoryInitPeiLib.c
++++ b/ArmPlatformPkg/MemoryInitPei/MemoryInitPeiLib.c
+@@ -30,9 +30,12 @@ InitMmu (
+   UINTN          TranslationTableSize;
+   RETURN_STATUS  Status;
+ 
++  #define DBG_UART(c) do { *(volatile UINT32 *)0x02500000 = (UINT32)(c); __asm__ volatile("dsb sy" ::: "memory"); } while(0)
++  DBG_UART('M'); DBG_UART('M'); DBG_UART('U'); DBG_UART('1');
+   // Note: Because we called PeiServicesInstallPeiMemory() before to call InitMmu() the MMU Page Table resides in
+   //      DRAM (even at the top of DRAM as it is the first permanent memory allocation)
+   Status = ArmConfigureMmu (MemoryTable, &TranslationTableBase, &TranslationTableSize);
++  DBG_UART('M'); DBG_UART('M'); DBG_UART('U'); DBG_UART('2');
+   if (EFI_ERROR (Status)) {
+     DEBUG ((DEBUG_ERROR, "Error: Failed to enable MMU\n"));
+   }
+diff --git a/ArmVirtPkg/PrePi/FdtParser.c b/ArmVirtPkg/PrePi/FdtParser.c
+index 3f443b7..aee86f5 100644
+--- a/ArmVirtPkg/PrePi/FdtParser.c
++++ b/ArmVirtPkg/PrePi/FdtParser.c
+@@ -81,6 +81,18 @@ CopyFdt (
+   IN    VOID  *FdtSource
+   )
+ {
++  #define DBG(c) do { *(volatile UINT32 *)0x02500000 = (UINT32)(c); __asm__ volatile("dsb sy" ::: "memory"); } while(0)
++  DBG('p');
+   FdtPack (FdtSource);
+-  CopyMem (FdtDest, FdtSource, FdtTotalSize (FdtSource));
++  DBG('q');
++  UINTN sz = FdtTotalSize (FdtSource);
++  DBG('r');
++  // Print DTB size as hex nibbles for debugging
++  for (int shift = 28; shift >= 0; shift -= 4) {
++    UINT8 nib = (sz >> shift) & 0xF;
++    DBG(nib < 10 ? '0' + nib : 'A' + nib - 10);
++  }
++  DBG(':');
++  CopyMem (FdtDest, FdtSource, sz);
++  DBG('s');
+ }
+diff --git a/ArmVirtPkg/PrePi/ModuleEntryPoint.S b/ArmVirtPkg/PrePi/ModuleEntryPoint.S
+index 92272ea..1ca71a5 100644
+--- a/ArmVirtPkg/PrePi/ModuleEntryPoint.S
++++ b/ArmVirtPkg/PrePi/ModuleEntryPoint.S
+@@ -9,6 +9,16 @@
+ #include <AsmMacroLib.h>
+ 
+ ASM_FUNC(_ModuleEntryPoint)
++  //
++  // Raw UART debug: write 'E' to A733 UART0 THR (0x02500000) before anything.
++  // This tells us the CPU reached _ModuleEntryPoint in AArch64.
++  //
++  mov   x10, #0x0250
++  lsl   x10, x10, #16        // x10 = 0x02500000 (A733 UART0 base)
++  mov   x11, #'E'
++  str   w11, [x10]
++  dsb   sy
++
+   //
+   // If we are booting from RAM using the Linux kernel boot protocol, x0 will
+   // point to the DTB image in memory. Otherwise, use the default value defined
+@@ -22,9 +32,18 @@ ASM_FUNC(_ModuleEntryPoint)
+ 
+   // Enable Floating Point. This needs to be done before entering C code, which
+   // may use FP/SIMD registers.
++  mov   x11, #'V'
++  str   w11, [x10]
++  dsb   sy
+   bl    ArmEnableVFP
++  mov   x11, #'F'
++  str   w11, [x10]
++  dsb   sy
+ 
+   bl    ASM_PFX(DiscoverDramFromDt)
++  mov   x11, #'D'
++  str   w11, [x10]
++  dsb   sy
+ 
+   // Get ID of this CPU in Multicore system
+   bl    ASM_PFX(ArmReadMpidr)
+@@ -99,6 +118,13 @@ _GetStackBase:
+   // Set the frame pointer to NULL so any backtraces terminate here
+   mov   x29, xzr
+ 
++  // Raw UART debug: write 'S' = stack setup done, about to call CEntryPoint
++  mov   x10, #0x0250
++  lsl   x10, x10, #16
++  mov   x11, #'S'
++  str   w11, [x10]
++  dsb   sy
++
+   // Jump to PrePiCore C code
+   //    x0 = MpId
+   //    x1 = UefiMemoryBase
+@@ -116,6 +142,13 @@ _NeverReturn:
+ ASM_PFX(DiscoverDramFromDt):
+   mov   x29, x30            // preserve LR
+ 
++  // UART debug: '1' = entered DiscoverDramFromDt
++  mov   x10, #0x0250
++  lsl   x10, x10, #16
++  mov   x11, #'1'
++  str   w11, [x10]
++  dsb   sy
++
+   //
+   // The base of the runtime image has been preserved in x27. Check whether
+   // the expected magic number can be found in the header.
+@@ -124,6 +157,10 @@ ASM_PFX(DiscoverDramFromDt):
+   ldr   w9, [x27, #0x38]
+   cmp   w8, w9
+   bne   .Lout
++  // UART debug: '2' = magic check passed
++  mov   x11, #'2'
++  str   w11, [x10]
++  dsb   sy
+ 
+   //
+   //
+@@ -149,7 +186,19 @@ ASM_PFX(DiscoverDramFromDt):
+   mov   x0, x7
+   adr   x1, PeCoffLoaderImageReadFromMemory
+   mov   sp, x7
++  // UART debug: '3' = about to call RelocatePeCoffImage
++  mov   x10, #0x0250
++  lsl   x10, x10, #16
++  mov   x11, #'3'
++  str   w11, [x10]
++  dsb   sy
+   bl    RelocatePeCoffImage
++  // UART debug: '4' = RelocatePeCoffImage returned
++  mov   x10, #0x0250
++  lsl   x10, x10, #16
++  mov   x11, #'4'
++  str   w11, [x10]
++  dsb   sy
+ 
+   //
+   // Discover the memory size and offset from the DTB, and record in the
+@@ -160,6 +209,12 @@ ASM_PFX(DiscoverDramFromDt):
+   adr   x1, PcdGet64 (PcdSystemMemoryBase)
+   adr   x2, PcdGet64 (PcdSystemMemorySize)
+   bl    FindMemnode
++  // UART debug: '5' = FindMemnode returned
++  mov   x10, #0x0250
++  lsl   x10, x10, #16
++  mov   x11, #'5'
++  str   w11, [x10]
++  dsb   sy
+   cbz   x0, .Lout
+ 
+   //
+@@ -174,6 +229,12 @@ ASM_PFX(DiscoverDramFromDt):
+   mov   x0, x27
+   mov   x1, x28
+   bl    CopyFdt
++  // UART debug: '6' = CopyFdt returned
++  mov   x10, #0x0250
++  lsl   x10, x10, #16
++  mov   x11, #'6'
++  str   w11, [x10]
++  dsb   sy
+ 
+ .Lout:
+   ret    x29
+diff --git a/ArmVirtPkg/PrePi/PrePi.c b/ArmVirtPkg/PrePi/PrePi.c
+index 9dbb5af..015f8d0 100755
+--- a/ArmVirtPkg/PrePi/PrePi.c
++++ b/ArmVirtPkg/PrePi/PrePi.c
+@@ -35,9 +35,15 @@ PrePiMain (
+   UINTN                       CharCount;
+   UINTN                       StacksSize;
+ 
++  // Initialize Serial Port early so we can see crash output before MMU/HOB setup
++  SerialPortInitialize ();
++  SerialPortWrite ((UINT8 *)"EDK2: PrePiMain entered\r\n", 24);
++
+   // Initialize the architecture specific bits
+   ArchInitialize ();
+ 
++  SerialPortWrite ((UINT8 *)"EDK2: ArchInitialize done\r\n", 27);
++
+   // Declare the PI/UEFI memory region
+   HobList = HobConstructor (
+               (VOID *)UefiMemoryBase,
+@@ -46,6 +52,7 @@ PrePiMain (
+               (VOID *)StacksBase // The top of the UEFI Memory is reserved for the stacks
+               );
+   PrePeiSetHobList (HobList);
++  SerialPortWrite ((UINT8 *)"EDK2: HobConstructor done\r\n", 27);
+ 
+   //
+   // Ensure that the loaded image is invalidated in the caches, so that any
+@@ -53,15 +60,19 @@ PrePiMain (
+   // relocations) don't become invisible once we turn them on.
+   //
+   InvalidateDataCacheRange ((VOID *)(UINTN)PcdGet64 (PcdFdBaseAddress), PcdGet32 (PcdFdSize));
++  SerialPortWrite ((UINT8 *)"EDK2: InvalidateDataCacheRange done\r\n", 37);
+ 
+   // SEC phase needs to run library constructors by hand.
+   ProcessLibraryConstructorList ();
++  SerialPortWrite ((UINT8 *)"EDK2: ProcessLibraryConstructorList done\r\n", 42);
+ 
+   // Initialize MMU and Memory HOBs (Resource Descriptor HOBs)
+   Status = MemoryPeim (UefiMemoryBase, FixedPcdGet32 (PcdSystemMemoryUefiRegionSize));
+   ASSERT_EFI_ERROR (Status);
+ 
+-  // Initialize the Serial Port
++  SerialPortWrite ((UINT8 *)"EDK2: MemoryPeim done\r\n", 23);
++
++  // Initialize the Serial Port (already done above, but re-init after MMU for DXE)
+   SerialPortInitialize ();
+   CharCount = AsciiSPrint (
+                 Buffer,
+@@ -122,6 +133,10 @@ CEntryPoint (
+   // Enable Instruction Caches on all cores.
+   ArmEnableInstructionCache ();
+ 
++  // Early serial init to see if we even reach CEntryPoint
++  SerialPortInitialize ();
++  SerialPortWrite ((UINT8 *)"EDK2: CEntryPoint\r\n", 19);
++
+   PrePiMain (UefiMemoryBase, StacksBase, StartTimeStamp);
+ 
+   // DXE Core should always load and never return
+@@ -139,29 +154,41 @@ RelocatePeCoffImage (
+   PE_COFF_LOADER_IMAGE_CONTEXT  ImageContext;
+   EFI_STATUS                    Status;
+ 
++  // Raw UART debug markers — A733 UART0 at 0x02500000
++  #define DBG(c) do { *(volatile UINT32 *)0x02500000 = (UINT32)(c); __asm__ volatile("dsb sy" ::: "memory"); } while(0)
++
++  DBG('a');
+   FileHandle = NULL;
+   Status     = FfsFindNextFile (
+                  EFI_FV_FILETYPE_SECURITY_CORE,
+                  FwVolHeader,
+                  &FileHandle
+                  );
++  DBG('b');
+   ASSERT_EFI_ERROR (Status);
+ 
+   Status = FfsFindSectionData (EFI_SECTION_PE32, FileHandle, &SectionData);
+   if (EFI_ERROR (Status)) {
+     Status = FfsFindSectionData (EFI_SECTION_TE, FileHandle, &SectionData);
+   }
++  DBG('c');
+ 
+   ASSERT_EFI_ERROR (Status);
+ 
+   ZeroMem (&ImageContext, sizeof ImageContext);
++  DBG('z');
+ 
+   ImageContext.Handle    = (EFI_HANDLE)SectionData;
+   ImageContext.ImageRead = ImageRead;
++  DBG('g');
+   PeCoffLoaderGetImageInfo (&ImageContext);
++  DBG('d');
+ 
+   if (ImageContext.ImageAddress != (UINTN)SectionData) {
+     ImageContext.ImageAddress = (UINTN)SectionData;
+     PeCoffLoaderRelocateImage (&ImageContext);
++    DBG('e');
++  } else {
++    DBG('f');
+   }
+ }

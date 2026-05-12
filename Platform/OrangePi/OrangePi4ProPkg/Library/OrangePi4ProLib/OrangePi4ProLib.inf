@@ -1,0 +1,32 @@
+## @file
+#  OrangePi4Pro ArmPlatformLib INF
+##
+
+[Defines]
+  INF_VERSION    = 0x0001001C
+  BASE_NAME      = OrangePi4ProLib
+  FILE_GUID      = 4a733020-dead-beef-cafe-a733a733a733
+  MODULE_TYPE    = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS  = ArmPlatformLib
+
+[Sources]
+  OrangePi4ProLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  ArmPkg/ArmPkg.dec
+  ArmPlatformPkg/ArmPlatformPkg.dec
+  Silicon/Allwinner/A733Pkg/A733Pkg.dec
+
+[LibraryClasses]
+  ArmLib
+  DebugLib
+  IoLib
+  PcdLib
+  MemoryAllocationLib
+
+[FixedPcd]
+  gArmTokenSpaceGuid.PcdSystemMemoryBase
+  gArmTokenSpaceGuid.PcdSystemMemorySize
+  gArmPlatformTokenSpaceGuid.PcdCoreCount
