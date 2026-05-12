@@ -1,0 +1,43 @@
+## @file
+#  OrangePi 4 Pro (Allwinner A733) platform package declarations.
+#
+#  Copyright (c) 2026, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION = 0x0001001b
+  PACKAGE_NAME      = OrangePi4ProPkg
+  PACKAGE_GUID      = 5B8F1A7E-3D2C-4E91-AB76-F1C4D3E5B6A7
+  PACKAGE_VERSION   = 0.1
+
+[Includes]
+  Include
+
+[Guids]
+  gOrangePi4ProTokenSpaceGuid = { 0x4E2C9F1A, 0x6B5D, 0x4F3E, { 0x8A, 0x71, 0xC2, 0xD4, 0xE5, 0xF6, 0x07, 0x18 } }
+
+[PcdsFixedAtBuild]
+  ## Base address (physical) of the framebuffer the previous boot stage
+  #  has already programmed into the Allwinner DE3.0 mixer. Zero disables
+  #  the SimpleFB GOP driver.
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferBase|0x0|UINT64|0x00000001
+
+  ## Size in bytes of the framebuffer region.
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferSize|0x0|UINT64|0x00000002
+
+  ## Visible width in pixels.
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferWidth|0|UINT32|0x00000003
+
+  ## Visible height in pixels.
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferHeight|0|UINT32|0x00000004
+
+  ## Pitch (bytes per scanline). 0 => assume Width * 4.
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferPitch|0|UINT32|0x00000005
+
+  ## Pixel format, matches EFI_GRAPHICS_PIXEL_FORMAT enum:
+  #    0 = PixelRedGreenBlueReserved8BitPerColor
+  #    1 = PixelBlueGreenRedReserved8BitPerColor
+  #    2 = PixelBitMask
+  #    3 = PixelBltOnly
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferFormat|1|UINT32|0x00000006

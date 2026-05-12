@@ -165,6 +165,34 @@ RegisterFvBootOption (
   return EFI_NOT_FOUND;
 }
 
+STATIC
+VOID
+DumpBootOptions (
+  VOID
+  )
+{
+  EFI_BOOT_MANAGER_LOAD_OPTION  *BootOptions;
+  UINTN                          BootOptionCount;
+  UINTN                          Index;
+  CHAR16                        *DpStr;
+
+  BootOptions = EfiBootManagerGetLoadOptions (&BootOptionCount, LoadOptionTypeBoot);
+  Print (L"Discovered %u boot option(s):\r\n", (UINT32)BootOptionCount);
+  for (Index = 0; Index < BootOptionCount; Index++) {
+    DpStr = ConvertDevicePathToText (BootOptions[Index].FilePath, FALSE, FALSE);
+    Print (
+      L"  Boot%04x  %s  ->  %s\r\n",
+      BootOptions[Index].OptionNumber,
+      BootOptions[Index].Description != NULL ? BootOptions[Index].Description : L"<no name>",
+      DpStr != NULL ? DpStr : L"<no path>"
+      );
+    if (DpStr != NULL) {
+      FreePool (DpStr);
+    }
+  }
+  EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
+}
+
 VOID
 EFIAPI
 PlatformBootManagerAfterConsole (
@@ -177,10 +205,23 @@ PlatformBootManagerAfterConsole (
   Print (L"\r\nOrange Pi 4 Pro UEFI (Allwinner A733) - carpi-os edk2-a733\r\n");
   Print (L"Press ESC for Boot Manager\r\n\r\n");
 
+  //
+  // Connect everything so block I/O, FAT, USB, NVMe etc. all attach;
+  // RefreshAllBootOption will then auto-create boot entries for any
+  // removable media containing \EFI\BOOT\BOOTAA64.EFI (the UEFI fallback path).
+  //
   EfiBootManagerConnectAll ();
   EfiBootManagerRefreshAllBootOption ();
 
+  //
+  // Always keep the embedded UEFI Shell available as a recovery option.
+  //
   RegisterFvBootOption (&ShellGuid, L"UEFI Shell", LOAD_OPTION_ACTIVE);
+
+  //
+  // Print what we found so the user can see USB/SD/NVMe detection over UART.
+  //
+  DumpBootOptions ();
 }
 
 VOID

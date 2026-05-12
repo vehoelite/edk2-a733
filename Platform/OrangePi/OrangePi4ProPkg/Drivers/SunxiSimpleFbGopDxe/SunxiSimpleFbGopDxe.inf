@@ -1,0 +1,56 @@
+## @file
+#  Sunxi SimpleFB GOP driver for Orange Pi 4 Pro (Allwinner A733).
+#
+#  Exposes the framebuffer that the BSP / U-Boot has already programmed
+#  in the Allwinner DE3.0 display engine as an EFI_GRAPHICS_OUTPUT_PROTOCOL
+#  instance. This is a "passive" GOP: it does NOT bring the display engine
+#  up itself. If the previous stage left the screen blanked, GOP will be
+#  blank too. This is the same model used by Raspberry Pi's UEFI port.
+#
+#  Once a real DE3.0 / TCON / HDMI driver lands, this driver becomes the
+#  fallback for early boot (before the real driver dispatches).
+#
+#  Copyright (c) 2026, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = SunxiSimpleFbGopDxe
+  FILE_GUID      = 9F2D6F1C-7B3A-4D4E-8E1F-2C5A7B9D0E11
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT    = SunxiSimpleFbGopEntry
+
+[Sources]
+  SunxiSimpleFbGopDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  DebugLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DevicePathLib
+  IoLib
+  PcdLib
+
+[Protocols]
+  gEfiGraphicsOutputProtocolGuid              ## PRODUCES
+  gEfiDevicePathProtocolGuid                  ## PRODUCES
+
+[Pcd]
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferBase
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferSize
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferWidth
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferHeight
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferPitch
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferFormat
+
+[Depex]
+  TRUE
