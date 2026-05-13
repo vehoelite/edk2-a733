@@ -133,6 +133,10 @@
   # Display: SimpleFB GOP (passes BSP-programmed framebuffer through to UEFI)
   INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSimpleFbGopDxe/SunxiSimpleFbGopDxe.inf
 
+  # GraphicsConsoleDxe: bind ConsoleOut to the GOP framebuffer so boot
+  # manager menus / Shell prompt render on the panel, not just UART.
+  INF  MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
+
   INF  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
   INF  MdeModulePkg/Application/UiApp/UiApp.inf
   INF  MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf

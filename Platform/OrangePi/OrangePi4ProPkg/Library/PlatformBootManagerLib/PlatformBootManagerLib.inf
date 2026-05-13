@@ -41,5 +41,6 @@
   gEfiDevicePathProtocolGuid
   gEfiLoadedImageProtocolGuid
   gEfiFirmwareVolume2ProtocolGuid
+  gEfiGraphicsOutputProtocolGuid
 
 [Pcd]

@@ -22,6 +22,7 @@
 #include <Protocol/DevicePath.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/FirmwareVolume2.h>
+#include <Protocol/GraphicsOutput.h>
 #include <Guid/SerialPortLibVendor.h>
 #include <Guid/GlobalVariable.h>
 
@@ -64,11 +65,47 @@ PlatformBootManagerBeforeConsole (
   )
 {
   EFI_DEVICE_PATH_PROTOCOL  *Dp;
+  EFI_STATUS                 Status;
+  UINTN                      HandleCount;
+  EFI_HANDLE                *Handles;
+  UINTN                      Index;
+  EFI_DEVICE_PATH_PROTOCOL  *GopDp;
 
+  //
+  // Serial console is always present.
+  //
   Dp = (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole;
   EfiBootManagerUpdateConsoleVariable (ConOut, Dp, NULL);
   EfiBootManagerUpdateConsoleVariable (ConIn,  Dp, NULL);
   EfiBootManagerUpdateConsoleVariable (ErrOut, Dp, NULL);
+
+  //
+  // SunxiSimpleFbGopDxe installs GOP + DevicePath on a single handle
+  // before BeforeConsole runs (DXE dispatch is complete). Add that
+  // handle's DevicePath to ConOut/ErrOut so ConSplitter + GraphicsConsoleDxe
+  // bind a text console on top of the panel.
+  //
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiGraphicsOutputProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (!EFI_ERROR (Status)) {
+    for (Index = 0; Index < HandleCount; Index++) {
+      Status = gBS->HandleProtocol (
+                      Handles[Index],
+                      &gEfiDevicePathProtocolGuid,
+                      (VOID **)&GopDp
+                      );
+      if (!EFI_ERROR (Status) && (GopDp != NULL)) {
+        EfiBootManagerUpdateConsoleVariable (ConOut, GopDp, NULL);
+        EfiBootManagerUpdateConsoleVariable (ErrOut, GopDp, NULL);
+      }
+    }
+    FreePool (Handles);
+  }
 }
 
 STATIC

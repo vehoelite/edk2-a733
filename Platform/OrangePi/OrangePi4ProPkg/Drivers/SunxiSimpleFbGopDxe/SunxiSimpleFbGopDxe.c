@@ -293,18 +293,16 @@ SunxiSimpleFbGopEntry (
     CONST UINTN  MIXER0_L0_PITCH= 0x0510100c;
     CONST UINTN  MIXER0_L0_ADDR = 0x05101018;
 
-    volatile UINT32 *Pixels = (volatile UINT32 *)(UINTN)FbBase;
-    UINTN            i;
-    UINTN            NumPixels = (Pitch / 4) * Height;
-
-    // Clear-screen paint: dark blue with white border so we can tell EDK2
-    // owns the panel vs. BSP splash bitmap.
-    for (i = 0; i < NumPixels; i++) {
-      Pixels[i] = 0xFF202060; // BGRA: A=FF R=20 G=20 B=60 -> dark blue
-    }
-    // White 4-pixel border on top edge for visual confirmation
-    for (i = 0; i < Width * 4; i++) {
-      Pixels[i] = 0xFFFFFFFF;
+    // Clear framebuffer to opaque black so GraphicsConsoleDxe has a
+    // clean canvas. Alpha=FF is required (BSP control word in 0x05101000
+    // has alpha-blend bits set; A=00 would make scanout transparent).
+    {
+      volatile UINT32 *Pixels    = (volatile UINT32 *)(UINTN)FbBase;
+      UINTN            NumPixels = (Pitch / 4) * Height;
+      UINTN            i;
+      for (i = 0; i < NumPixels; i++) {
+        Pixels[i] = 0xFF000000;
+      }
     }
     WriteBackInvalidateDataCacheRange ((VOID *)(UINTN)FbBase, FbSize);
 
