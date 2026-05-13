@@ -28,6 +28,7 @@
 #include <Library/DevicePathLib.h>
 #include <Library/PcdLib.h>
 #include <Library/IoLib.h>
+#include <Library/CacheMaintenanceLib.h>
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/DevicePath.h>
 
@@ -113,11 +114,108 @@ GopBlt (
   IN  UINTN                              Delta         OPTIONAL
   )
 {
-  //
-  // TODO(phase2): software Blt for all four operations.
-  // For phase 1 we report success but do not paint, since we have no
-  // confirmation that PcdSunxiFramebufferBase is correct yet.
-  //
+  UINT32                              *Fb;
+  UINT32                               PixelsPerLine;
+  UINT32                               FbW;
+  UINT32                               FbH;
+  UINTN                                Row;
+  UINT32                              *DstLine;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL       *SrcLine;
+  UINTN                                BltDelta;
+  UINTN                                FbStrideBytes;
+
+  Fb            = (UINT32 *)(UINTN)mMode.FrameBufferBase;
+  PixelsPerLine = mModeInfo.PixelsPerScanLine;
+  FbStrideBytes = (UINTN)PixelsPerLine * sizeof (UINT32);
+  FbW           = mModeInfo.HorizontalResolution;
+  FbH           = mModeInfo.VerticalResolution;
+  BltDelta      = (Delta == 0) ? Width * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL) : Delta;
+
+  // Bounds check on framebuffer side
+  if ((DestinationX + Width  > FbW) || (DestinationY + Height > FbH)) {
+    if (BltOperation != EfiBltVideoToBltBuffer) {
+      return EFI_INVALID_PARAMETER;
+    }
+  }
+
+  switch (BltOperation) {
+    case EfiBltVideoFill:
+      if (BltBuffer == NULL) {
+        return EFI_INVALID_PARAMETER;
+      }
+      {
+        EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Px = *BltBuffer;
+        // BGRA8888 packing matches EFI_GRAPHICS_OUTPUT_BLT_PIXEL bytewise
+        UINT32  Word = 0xFF000000u
+                       | ((UINT32)Px.Red   << 16)
+                       | ((UINT32)Px.Green <<  8)
+                       | ((UINT32)Px.Blue  <<  0);
+        for (Row = 0; Row < Height; Row++) {
+          UINTN  Col;
+          DstLine = Fb + (DestinationY + Row) * PixelsPerLine + DestinationX;
+          for (Col = 0; Col < Width; Col++) {
+            DstLine[Col] = Word;
+          }
+        }
+      }
+      break;
+
+    case EfiBltBufferToVideo:
+      if (BltBuffer == NULL) {
+        return EFI_INVALID_PARAMETER;
+      }
+      for (Row = 0; Row < Height; Row++) {
+        DstLine = Fb + (DestinationY + Row) * PixelsPerLine + DestinationX;
+        SrcLine = (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)
+                    ((UINT8 *)BltBuffer + (SourceY + Row) * BltDelta
+                     + SourceX * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+        // 1:1 copy: BltPixel layout (B,G,R,Reserved) matches BGRA8888 word
+        CopyMem (DstLine, SrcLine, Width * sizeof (UINT32));
+      }
+      break;
+
+    case EfiBltVideoToBltBuffer:
+      if (BltBuffer == NULL) {
+        return EFI_INVALID_PARAMETER;
+      }
+      for (Row = 0; Row < Height; Row++) {
+        UINT32                         *Src = Fb + (SourceY + Row) * PixelsPerLine + SourceX;
+        EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Dst = (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)
+                    ((UINT8 *)BltBuffer + (DestinationY + Row) * BltDelta
+                     + DestinationX * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+        CopyMem (Dst, Src, Width * sizeof (UINT32));
+      }
+      break;
+
+    case EfiBltVideoToVideo:
+      // Do row-by-row copy, handling overlap by direction
+      if (DestinationY <= SourceY) {
+        for (Row = 0; Row < Height; Row++) {
+          UINT32  *Src = Fb + (SourceY      + Row) * PixelsPerLine + SourceX;
+          UINT32  *Dst = Fb + (DestinationY + Row) * PixelsPerLine + DestinationX;
+          CopyMem (Dst, Src, Width * sizeof (UINT32));
+        }
+      } else {
+        for (Row = Height; Row > 0; Row--) {
+          UINT32  *Src = Fb + (SourceY      + Row - 1) * PixelsPerLine + SourceX;
+          UINT32  *Dst = Fb + (DestinationY + Row - 1) * PixelsPerLine + DestinationX;
+          CopyMem (Dst, Src, Width * sizeof (UINT32));
+        }
+      }
+      break;
+
+    default:
+      return EFI_INVALID_PARAMETER;
+  }
+
+  // Ensure scanout sees writes (cached normal memory).
+  if (BltOperation != EfiBltVideoToBltBuffer) {
+    WriteBackInvalidateDataCacheRange (
+      (VOID *)((UINTN)Fb + DestinationY * FbStrideBytes),
+      Height * FbStrideBytes
+      );
+  }
+
   return EFI_SUCCESS;
 }
 
@@ -167,6 +265,57 @@ SunxiSimpleFbGopEntry (
   mGop.SetMode   = GopSetMode;
   mGop.Blt       = GopBlt;
   mGop.Mode      = &mMode;
+
+  //
+  // ===== A733 DE3.0 mixer0 layer-0 framebuffer takeover =====
+  //
+  // Discovered live on the device by snapshotting DE3.0 register space
+  // before/after Linux DRM moved scanout from one buffer to another:
+  //
+  //   PA 0x05100008  Mixer0 GLB_DBUFF_REG       write 1 -> apply settings
+  //   PA 0x05101000  Mixer0 layer-0 control     keep BSP value (0xFF008003)
+  //   PA 0x05101004  Mixer0 layer-0 size        (H-1)<<16 | (W-1)
+  //   PA 0x0510100c  Mixer0 layer-0 pitch       bytes per scanline
+  //   PA 0x05101018  Mixer0 layer-0 SCANOUT addr (the one we care about)
+  //
+  // BSP U-Boot programmed DE3.0 to scan from its own splash buffer; we
+  // repoint scanout to PcdSunxiFramebufferBase, then commit via DBUFF.
+  // We deliberately do NOT touch the control word (0x05101000) so we
+  // inherit BSP's format (BGRA8888) and enable bits.
+  //
+  // We also paint a clear-screen so the takeover is visible: solid dark
+  // blue. Once we confirm panel updates, this paint can be removed and
+  // the buffer left zeroed for the OS loader to draw into.
+  //
+  {
+    CONST UINTN  MIXER0_DBUFF   = 0x05100008;
+    CONST UINTN  MIXER0_L0_SIZE = 0x05101004;
+    CONST UINTN  MIXER0_L0_PITCH= 0x0510100c;
+    CONST UINTN  MIXER0_L0_ADDR = 0x05101018;
+
+    volatile UINT32 *Pixels = (volatile UINT32 *)(UINTN)FbBase;
+    UINTN            i;
+    UINTN            NumPixels = (Pitch / 4) * Height;
+
+    // Clear-screen paint: dark blue with white border so we can tell EDK2
+    // owns the panel vs. BSP splash bitmap.
+    for (i = 0; i < NumPixels; i++) {
+      Pixels[i] = 0xFF202060; // BGRA: A=FF R=20 G=20 B=60 -> dark blue
+    }
+    // White 4-pixel border on top edge for visual confirmation
+    for (i = 0; i < Width * 4; i++) {
+      Pixels[i] = 0xFFFFFFFF;
+    }
+    WriteBackInvalidateDataCacheRange ((VOID *)(UINTN)FbBase, FbSize);
+
+    // Repoint DE3.0 mixer0 layer-0 to our buffer.
+    MmioWrite32 (MIXER0_L0_SIZE,  ((Height - 1) << 16) | (Width - 1));
+    MmioWrite32 (MIXER0_L0_PITCH, Pitch);
+    MmioWrite32 (MIXER0_L0_ADDR,  (UINT32)FbBase);
+
+    // Apply via double-buffer commit.
+    MmioWrite32 (MIXER0_DBUFF, 1);
+  }
 
   Handle = NULL;
   Status = gBS->InstallMultipleProtocolInterfaces (

@@ -130,6 +130,9 @@
   INF  MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
   INF  MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
 
+  # Display: SimpleFB GOP (passes BSP-programmed framebuffer through to UEFI)
+  INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSimpleFbGopDxe/SunxiSimpleFbGopDxe.inf
+
   INF  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
   INF  MdeModulePkg/Application/UiApp/UiApp.inf
   INF  MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf

@@ -239,6 +239,20 @@
   gEfiMdeModulePkgTokenSpaceGuid.PcdEmuVariableNvModeEnable|TRUE
 
   #
+  # SimpleFB GOP — passes the framebuffer programmed by the previous boot
+  # stage (BSP U-Boot) through to UEFI as a GraphicsOutputProtocol.
+  # The reserved DRAM region 0xF7000000-0xFFFFFFFF on the A733 holds the
+  # active scanout buffer at 0xFF800000 (1024x600x32, BGRA8888, pitch 4096),
+  # confirmed from /dev/fb0 / fbset under Linux.
+  #
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferBase|0xFF800000
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferSize|0x00500000      # 5 MB (covers 1024x1200x4 double buffer)
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferWidth|1024
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferHeight|600
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferPitch|4096
+  gOrangePi4ProTokenSpaceGuid.PcdSunxiFramebufferFormat|1             # PixelBlueGreenRedReserved8BitPerColor
+
+  #
   # PSCI: PSCI support is always on in current EDK2; SMC (not HVC) to reach TF-A BL31.
   #
 
@@ -316,6 +330,11 @@
   MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
   MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
   MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
+
+  #
+  # Display: SimpleFB GOP — exposes BSP-programmed framebuffer as GOP
+  #
+  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSimpleFbGopDxe/SunxiSimpleFbGopDxe.inf
 
   #
   # Network (stub — add actual PHY driver later)
