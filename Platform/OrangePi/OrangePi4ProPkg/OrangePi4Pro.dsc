@@ -117,6 +117,7 @@
   NetLib|NetworkPkg/Library/DxeNetLib/DxeNetLib.inf
   SortLib|MdeModulePkg/Library/UefiSortLib/UefiSortLib.inf
   UefiUsbLib|MdePkg/Library/UefiUsbLib/UefiUsbLib.inf
+  NonDiscoverableDeviceRegistrationLib|MdeModulePkg/Library/NonDiscoverableDeviceRegistrationLib/NonDiscoverableDeviceRegistrationLib.inf
   VariableFlashInfoLib|MdeModulePkg/Library/BaseVariableFlashInfoLib/BaseVariableFlashInfoLib.inf
   VariablePolicyLib|MdeModulePkg/Library/VariablePolicyLib/VariablePolicyLib.inf
 
@@ -325,12 +326,17 @@
   FatPkg/EnhancedFatDxe/Fat.inf
 
   #
-  # USB Host (add Allwinner EHCI/xHCI drivers here)
-  # TODO: write or port a sunxi USB host driver (USB3 XHCI on A733).
+  # USB Host: A733 has 1x xHCI (USB3) at 0x06A00000 + 2x EHCI (USB2) at
+  # 0x04101000 / 0x04200000. SunxiUsbDxe registers them as NonDiscoverable
+  # devices so the generic XhciDxe / EhciDxe drivers attach.
   #
+  MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
+  MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
+  MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
   MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
   MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
   MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
+  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiUsbDxe/SunxiUsbDxe.inf
 
   #
   # Display: SimpleFB GOP — exposes BSP-programmed framebuffer as GOP

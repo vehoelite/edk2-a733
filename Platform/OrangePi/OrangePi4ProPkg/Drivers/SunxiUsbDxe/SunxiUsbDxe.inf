@@ -1,0 +1,36 @@
+## @file
+#  SunxiUsbDxe - register Allwinner A733 xHCI/EHCI controllers as
+#  EDKII NonDiscoverable devices so the generic XhciDxe/EhciDxe drivers
+#  in MdeModulePkg bind to them.
+#
+#  The BSP U-Boot has already initialised USB clocks, PHY and VBUS
+#  before handing control to BL33, so we don't need to touch any
+#  CCU / PHY / regulator registers.
+#
+#  Copyright (c) 2026, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = SunxiUsbDxe
+  FILE_GUID      = 7E3D1F2C-9A4B-4C5D-8E6F-1B2C3D4E5F60
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = SunxiUsbDxeEntry
+
+[Sources]
+  SunxiUsbDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  DebugLib
+  NonDiscoverableDeviceRegistrationLib
+
+[Depex]
+  TRUE

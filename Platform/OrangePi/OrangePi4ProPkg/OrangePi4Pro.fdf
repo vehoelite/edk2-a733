@@ -126,9 +126,13 @@
   INF  MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
   INF  FatPkg/EnhancedFatDxe/Fat.inf
 
+  INF  MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
+  INF  MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
+  INF  MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
   INF  MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
   INF  MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
   INF  MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
+  INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiUsbDxe/SunxiUsbDxe.inf
 
   # Display: SimpleFB GOP (passes BSP-programmed framebuffer through to UEFI)
   INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSimpleFbGopDxe/SunxiSimpleFbGopDxe.inf
