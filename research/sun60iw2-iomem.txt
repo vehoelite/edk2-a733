@@ -1,0 +1,69 @@
+[sudo] password for orangepi: === iomem ===
+02000000-020005ff : 2000000.pinctrl pinctrl@2000000
+02050000-0205001f : 2050000.watchdog watchdog@2050000
+02500000-025003ff : uart-ng
+02501000-025013ff : uart-ng
+02506000-025063ff : uart-ng
+02515000-025153ff : 2515000.twi twi@2515000
+02517000-025173ff : 2517000.twi twi@2517000
+02518000-025183ff : 2518000.twi twi@2518000
+02519000-025193ff : 2519000.twi twi@2519000
+02522000-025224ff : 2522000.ths ths@2522000
+02527000-025273ff : 2527000.pwm pwm@2527000
+02528000-025283ff : 2528000.pwm pwm@2528000
+02535000-0253509f : sunxi-snd-plat-i2s
+02536000-0253609f : sunxi-snd-plat-i2s
+02540000-02540fff : 2540000.spi spi@2540000
+03600000-03600fff : vipcore_reg_0
+03900000-0391ffff : 3900000.iommu iommu@3900000
+04020000-04020fff : 4020000.sdmmc sdmmc@4020000
+04021000-04021fff : 4021000.sdmmc sdmmc@4021000
+04022000-04022fff : 4022000.sdmmc sdmmc@4022000
+04500000-04507fff : 4500000.ethernet ethernet@4500000
+04508000-04508fff : 4500000.ethernet ethernet@4500000
+04601000-04602fff : 4601000.dma-controller dma-controller@4601000
+05000000-053fffff : 5000000.de de@5000000
+05500000-05500fff : 5500000.vo0 vo0@5500000
+05510000-05510fff : 5510000.vo1 vo1@5510000
+05730000-05730fff : 5730000.tcon3 tcon3@5730000
+05731000-05731fff : 5731000.tcon4 tcon4@5731000
+06000000-0647ffff : 6000000.pcie dbi
+06a00000-06a07fff : xhci2-controller@6a00000
+  06a00000-06a07fff : xhci-hcd.40.auto xhci2-controller@6a00000
+06a0c100-06afffff : 6a00000.xhci2-controller xhci2-controller@6a00000
+06b00000-06b007ff : 6b00000.phy u2_base
+06c00000-06c003ff : 6c00000.serdes serdes@6c00000
+06c06000-06c07fff : 6c00000.serdes serdes@6c00000
+07010320-0701032b : intc-nmi@7010320
+07023000-070233ff : 7023000.pwm pwm@7023000
+07025000-0702540f : 7025000.pinctrl pinctrl@7025000
+07083000-070833ff : 7083000.twi twi@7083000
+07085000-070853ff : 7085000.twi twi@7085000
+08870000-08873033 : 8870000.cpupll_ccu cpupll_ccu@8870000
+22000000-27ffffff : pcie@6000000
+  22000000-220fffff : 0000:00:00.0
+  22100000-221fffff : PCI Bus 0000:01
+    22100000-22103fff : 0000:01:00.0
+      22100000-22103fff : nvme
+  22200000-2220ffff : 0000:00:00.0
+40000000-1bfffffff : System RAM
+  41010000-4235ffff : Kernel code
+  42360000-4257ffff : reserved
+  42580000-4284ffff : Kernel data
+  43000000-4309afff : reserved
+  48000000-48ffffff : reserved
+  4921c000-49ffffff : reserved
+  bbf12000-bc169fff : reserved
+  f7000000-ffffffff : reserved
+  1b8480000-1bf1fffff : reserved
+  1bf257000-1bf257fff : reserved
+  1bf258000-1bf2e7fff : reserved
+  1bf2ea000-1bf2eafff : reserved
+  1bf2eb000-1bf2ecfff : reserved
+  1bf2ed000-1bf2fdfff : reserved
+  1bf2fe000-1bf2fefff : reserved
+  1bf2ff000-1bfffffff : reserved
+
+=== DT soc tree ===
+ls: cannot access '/proc/device-tree/soc/'
+: No such file or directory

@@ -1,0 +1,100 @@
+[sudo] password for orangepi: ==== /proc/device-tree/soc@3000000/ccu@2002000 ====
+compatible: allwinner,sun60iw2-ccu 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+clocks: /tmp/scrape3.sh: line 16: xxd: command not found
+clock-names: hosc losc iosc 
+
+==== /proc/device-tree/soc@3000000/ehci0-controller@4101000 ====
+compatible: allwinner,sunxi-ehci0 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+clocks: /tmp/scrape3.sh: line 16: xxd: command not found
+resets: /tmp/scrape3.sh: line 16: xxd: command not found
+clock-names: hosc bus_hci res_dcap usb_sys_ahb msi_lite 
+reset-names: hci phy 
+interrupts: /tmp/scrape3.sh: line 16: xxd: command not found
+status: okay 
+
+==== /proc/device-tree/soc@3000000/ehci1-controller@4200000 ====
+compatible: allwinner,sunxi-ehci1 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+clocks: /tmp/scrape3.sh: line 16: xxd: command not found
+resets: /tmp/scrape3.sh: line 16: xxd: command not found
+clock-names: hosc bus_hci res_dcap usb_sys_ahb msi_lite 
+reset-names: hci phy 
+interrupts: /tmp/scrape3.sh: line 16: xxd: command not found
+status: okay 
+
+==== /proc/device-tree/soc@3000000/ethernet@4500000/mdio0@0/ethernet-phy@1 ====
+compatible: ethernet-phy-ieee802.3-c22 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+
+==== /proc/device-tree/soc@3000000/ethernet@4510000/mdio1@0/ethernet-phy@1 ====
+compatible: ethernet-phy-ieee802.3-c22 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+
+==== /proc/device-tree/soc@3000000/ohci0-controller@4101400 ====
+compatible: allwinner,sunxi-ohci0 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+clocks: /tmp/scrape3.sh: line 16: xxd: command not found
+resets: /tmp/scrape3.sh: line 16: xxd: command not found
+clock-names: hosc bus_hci ohci res_dcap usb_sys_ahb msi_lite 
+reset-names: hci phy 
+interrupts: /tmp/scrape3.sh: line 16: xxd: command not found
+status: okay 
+
+==== /proc/device-tree/soc@3000000/ohci1-controller@4200400 ====
+compatible: allwinner,sunxi-ohci1 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+clocks: /tmp/scrape3.sh: line 16: xxd: command not found
+resets: /tmp/scrape3.sh: line 16: xxd: command not found
+clock-names: hosc bus_hci ohci res_dcap usb_sys_ahb msi_lite 
+reset-names: hci phy 
+interrupts: /tmp/scrape3.sh: line 16: xxd: command not found
+status: okay 
+
+==== /proc/device-tree/soc@3000000/phy@5507000 ====
+compatible: allwinner,sunxi-dsi-combo-phy0,sun60iw2 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+clocks: /tmp/scrape3.sh: line 16: xxd: command not found
+resets: /tmp/scrape3.sh: line 16: xxd: command not found
+clock-names: phy_gating_clk 
+reset-names: phy_rst_clk 
+status: disabled 
+
+==== /proc/device-tree/soc@3000000/phy@5509000 ====
+compatible: allwinner,sunxi-dsi-combo-phy1,sun60iw2 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+clocks: /tmp/scrape3.sh: line 16: xxd: command not found
+resets: /tmp/scrape3.sh: line 16: xxd: command not found
+clock-names: phy_gating_clk 
+reset-names: phy_rst_clk 
+status: disabled 
+
+==== /proc/device-tree/soc@3000000/phy@6b00000 ====
+compatible: allwinner,sunxi-plat-phy 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+clocks: /tmp/scrape3.sh: line 16: xxd: command not found
+clock-names: res_dcap 
+status: okay 
+
+==== /proc/device-tree/soc@3000000/r_ccu@7010000 ====
+compatible: allwinner,sun60iw2-r-ccu 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+
+==== /proc/device-tree/soc@3000000/rtc_ccu@7090000 ====
+compatible: allwinner,sun60iw2-rtc-ccu 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+
+==== /proc/device-tree/soc@3000000/serdes@6c00000 ====
+compatible: allwinner,cadence-combophy 
+reg: /tmp/scrape3.sh: line 16: xxd: command not found
+clocks: /tmp/scrape3.sh: line 16: xxd: command not found
+resets: /tmp/scrape3.sh: line 16: xxd: command not found
+clock-names: serdes-clk dcxo-serdes0-clk dcxo-serdes1-clk 
+reset-names: serdes-reset 
+status: okay 
+
+==== /proc/device-tree/soc@3000000/twi@7083000/pmu@34/usb_power_supply ====
+compatible: x-powers,axp515-usb-power-supply 
+status: okay 
+

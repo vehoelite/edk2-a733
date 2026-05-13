@@ -1,0 +1,69 @@
+==== /proc/device-tree/soc@3000000/ehci0-controller@4101000 ====
+compatible = allwinner,sunxi-ehci0 
+reg = 00000000041010000000000000000fff0000000000000000000000000000010000000000041000000000000000001000
+clocks = 00000012000000dd00000012000000d8000000120000010b0000001200000042000000120000003b
+resets = 00000012000000530000001200000051
+clock-names = hosc bus_hci res_dcap usb_sys_ahb msi_lite 
+reset-names = hci phy 
+interrupts = 000000000000009d00000004
+status = okay 
+==== /proc/device-tree/soc@3000000/ehci1-controller@4200000 ====
+compatible = allwinner,sunxi-ehci1 
+reg = 00000000042000000000000000000fff0000000000000000000000000000010000000000041000000000000000001000
+clocks = 00000012000000dd00000012000000db000000120000010b0000001200000042000000120000003b
+resets = 00000012000000560000001200000055
+clock-names = hosc bus_hci res_dcap usb_sys_ahb msi_lite 
+reset-names = hci phy 
+interrupts = 000000000000009f00000004
+status = okay 
+==== /proc/device-tree/soc@3000000/ohci0-controller@4101400 ====
+compatible = allwinner,sunxi-ohci0 
+reg = 00000000041014000000000000000fff0000000000000000000000000000010000000000041000000000000000001000
+clocks = 00000012000000dd00000012000000d900000012000000d6000000120000010b0000001200000042000000120000003b
+resets = 00000012000000540000001200000051
+clock-names = hosc bus_hci ohci res_dcap usb_sys_ahb msi_lite 
+reset-names = hci phy 
+interrupts = 000000000000009e00000004
+status = okay 
+==== /proc/device-tree/soc@3000000/ohci1-controller@4200400 ====
+compatible = allwinner,sunxi-ohci1 
+reg = 00000000042004000000000000000fff0000000000000000000000000000010000000000041000000000000000001000
+clocks = 00000012000000dd00000012000000dc00000012000000da000000120000010b0000001200000042000000120000003b
+resets = 00000012000000570000001200000055
+clock-names = hosc bus_hci ohci res_dcap usb_sys_ahb msi_lite 
+reset-names = hci phy 
+interrupts = 00000000000000a000000004
+status = okay 
+==== /proc/device-tree/soc@3000000/phy@6b00000 ====
+compatible = allwinner,sunxi-plat-phy 
+reg = 0000000006b00000000000000000080000000000030000000000000000000300
+clocks = 000000120000010b
+clock-names = res_dcap 
+status = okay 
+==== /proc/device-tree/soc@3000000/serdes@6c00000 ====
+compatible = allwinner,cadence-combophy 
+reg = 0000000006c0000000000000000004000000000006c060000000000000002000000000000709016c0000000000000004
+clocks = 00000012000000e50000002b0000000a0000002b00000009
+resets = 000000120000005b
+clock-names = serdes-clk dcxo-serdes0-clk dcxo-serdes1-clk 
+reset-names = serdes-reset 
+status = okay 
+==== /proc/device-tree/soc@3000000/ccu@2002000 ====
+compatible = allwinner,sun60iw2-ccu 
+reg = 00000000020020000000000000002000
+clocks = 0000002c0000002b000000030000002d
+clock-names = hosc losc iosc 
+==== /proc/device-tree/soc@3000000/r_ccu@7010000 ====
+compatible = allwinner,sun60iw2-r-ccu 
+reg = 00000000070100000000000000000340
+==== /proc/device-tree/usb0-vbus ====
+compatible = regulator-fixed 
+regulator-name = usb0-vbus 
+regulator-min-microvolt = 004c4b40
+regulator-max-microvolt = 004c4b40
+==== /proc/device-tree/usb1-vbus ====
+compatible = regulator-fixed 
+regulator-name = usb1-vbus 
+regulator-min-microvolt = 004c4b40
+regulator-max-microvolt = 004c4b40
+gpio = 00000033000000010000000700000001
