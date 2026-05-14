@@ -1,0 +1,16 @@
+name: Greetings
+
+on: [pull_request_target, issues]
+
+jobs:
+  greeting:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+    - uses: actions/first-interaction@v1
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        issue-message: "Hello! This repository is a WIP and genuinely grateful for any help received. Please allow a little time to investigate any issues but every submission will be looked at with undivided attention."
+        pr-message: "Hello! please contact beg0fthend@gmail.com with any findings, your help with porting edk2 to the Allwinner A733 is genuinely welcomed. Thank you in advanced!"
