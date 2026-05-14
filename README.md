@@ -33,8 +33,8 @@ GOP driver that takes ownership of the DE3.0 mixer0 scanout pipeline.
 | **USB-A right pair (EHCI1)** | ✅ | **both top + bottom right USB-A ports working**                |
 | **USB Mass Storage**    | ✅    | **enumerates as `BLK0`/`BLK1`/`FS0`/`CDROM` in EFI shell**     |
 | **USB HID keyboard**    | ✅    | **typing reaches the EFI shell prompt (wildcard ConIn)**       |
-| USB-A left bottom (EHCI0) | ❌  | PHY shares OTG block; bring-up ordering still WIP              |
-| USB-A left top (xHCI 3.0) | ❌  | Cadence Combo PHY + DWC3 stack not started                     |
+| USB-A left bottom (EHCI0) | ⚠️  | PHY up + registered (UTMI_STAT=0x08, PORTSC=0x3000); jack physical wiring TBD |
+| USB-A left top (xHCI 3.0) | ❌  | DWC3 wrapper alive but xHCI MMIO dead — needs Cadence Combo PHY init at `0x06C00000` |
 | PCIe / NVMe             | ⚠️    | link is up; config-space DBI is access-locked (see § walls)    |
 | Variable runtime        | ❌    | no SPI NOR variable backend yet                                |
 | ACPI                    | ❌    | no DSDT generator yet                                          |
