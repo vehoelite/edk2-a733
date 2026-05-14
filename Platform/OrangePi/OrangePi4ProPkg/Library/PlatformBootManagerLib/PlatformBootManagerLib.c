@@ -58,6 +58,33 @@ STATIC PLATFORM_SERIAL_CONSOLE  mSerialConsole = {
     { (UINT8)sizeof (EFI_DEVICE_PATH_PROTOCOL), 0 } }
 };
 
+//
+// USB Class wildcard device path that matches any USB HID boot-protocol
+// keyboard. ConPlatformDxe expands wildcard ConIn entries against every
+// SimpleTextInputEx instance UsbBusDxe/UsbKbDxe instantiates, so any USB
+// keyboard plugged into any port is auto-added to console input.
+//
+#pragma pack(1)
+typedef struct {
+  USB_CLASS_DEVICE_PATH     UsbClass;
+  EFI_DEVICE_PATH_PROTOCOL  End;
+} PLATFORM_USB_KEYBOARD;
+#pragma pack()
+
+STATIC PLATFORM_USB_KEYBOARD  mUsbKeyboard = {
+  {
+    { MESSAGING_DEVICE_PATH, MSG_USB_CLASS_DP,
+      { (UINT8)sizeof (USB_CLASS_DEVICE_PATH), 0 } },
+    0xFFFF, // VendorId  (any)
+    0xFFFF, // ProductId (any)
+    0x03,   // DeviceClass    = HID
+    0x01,   // DeviceSubClass = boot interface
+    0x01    // DeviceProtocol = keyboard
+  },
+  { END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE,
+    { (UINT8)sizeof (EFI_DEVICE_PATH_PROTOCOL), 0 } }
+};
+
 VOID
 EFIAPI
 PlatformBootManagerBeforeConsole (
@@ -78,6 +105,14 @@ PlatformBootManagerBeforeConsole (
   EfiBootManagerUpdateConsoleVariable (ConOut, Dp, NULL);
   EfiBootManagerUpdateConsoleVariable (ConIn,  Dp, NULL);
   EfiBootManagerUpdateConsoleVariable (ErrOut, Dp, NULL);
+
+  //
+  // Wildcard USB-HID-keyboard ConIn entry. UsbBusDxe + UsbKbDxe will bind
+  // to any USB keyboard, then ConPlatformDxe expands this entry against
+  // every matching SimpleTextInputEx so keystrokes reach ConSplitter.
+  //
+  Dp = (EFI_DEVICE_PATH_PROTOCOL *)&mUsbKeyboard;
+  EfiBootManagerUpdateConsoleVariable (ConIn, Dp, NULL);
 
   //
   // SunxiSimpleFbGopDxe installs GOP + DevicePath on a single handle
@@ -239,7 +274,7 @@ PlatformBootManagerAfterConsole (
   EFI_GUID  ShellGuid = { 0x7C04A583, 0x9E3E, 0x4f1c,
                           { 0xAD, 0x65, 0xE0, 0x52, 0x68, 0xD0, 0xB4, 0xD1 } };
 
-  Print (L"\r\nOrange Pi 4 Pro UEFI (Allwinner A733) - carpi-os edk2-a733\r\n");
+  Print (L"\r\nOrange Pi 4 Pro UEFI (Allwinner A733)\r\n");
   Print (L"Press ESC for Boot Manager\r\n\r\n");
 
   //
