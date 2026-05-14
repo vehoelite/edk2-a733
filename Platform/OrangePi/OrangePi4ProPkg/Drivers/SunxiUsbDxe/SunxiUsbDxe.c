@@ -514,13 +514,6 @@ SunxiUsbPhyInit (
 
   MicroSecondDelay (10);
 
-  // EHCI0 PHY: clear SIDDQ at 0x04101810 bit 3, then deassert PHY reset
-  // at CCU+0x1300 BIT(30).
-  SunxiUsbHciPhyEnable (0x04101000, CCU_USB_CLK_REG);
-  // EHCI1 PHY: clear SIDDQ at 0x04200810 bit 3, then deassert PHY reset
-  // at CCU+0x1308 BIT(30).
-  SunxiUsbHciPhyEnable (0x04200000, CCU_USB1_CLK_REG);
-
   // SelectPhyToHci: route the OTG-shared PHY0 to EHCI0/OHCI0 host.
   //   bsp/drivers/usb/host/sunxi-hci.c::USBC_SelectPhyToHci()
   // The BSP does exactly this for HCI0_USBC_NO:
@@ -530,12 +523,23 @@ SunxiUsbPhyInit (
   // Live Linux ends up with 0x40000000 (BIT30 set, BIT0 cleared); BIT30
   // is set by some other init path (likely MUSB OTG bringup), not by
   // SelectPhyToHci itself. We follow the BSP and only clear BIT0.
+  //
+  // BUILD #31: must happen *before* EHCI0's PHY reset/SIDDQ sequence,
+  // otherwise the OTG block is still owning PHY0 when we try to clear
+  // SIDDQ and the UTMI clock never starts on EHCI0.
   Val = MmioRead32 (0x04100000ULL + 0x420);
   DEBUG ((DEBUG_ERROR, "  OTG+0x420 (phy_cfg) was 0x%08x\n", Val));
   Val &= ~(UINT32)BIT0;     // route PHY0 to EHCI host (release from OTG)
   MmioWrite32 (0x04100000ULL + 0x420, Val);
   DEBUG ((DEBUG_ERROR, "  OTG+0x420 (phy_cfg) now 0x%08x\n",
     MmioRead32 (0x04100000ULL + 0x420)));
+
+  // EHCI0 PHY: clear SIDDQ at 0x04101810 bit 3, then deassert PHY reset
+  // at CCU+0x1300 BIT(30).
+  SunxiUsbHciPhyEnable (0x04101000, CCU_USB_CLK_REG);
+  // EHCI1 PHY: clear SIDDQ at 0x04200810 bit 3, then deassert PHY reset
+  // at CCU+0x1308 BIT(30).
+  SunxiUsbHciPhyEnable (0x04200000, CCU_USB1_CLK_REG);
 
   // === BUILD #20: Initialize the USB2 PHY core at 0x06B00000 directly ===
   //
@@ -685,23 +689,25 @@ SunxiUsbDxeEntry (
       MmioRead32 (Base + CapL + 0x44)));
   }
 
-  // xHCI2 still skipped - it needs ComboPHY init which we have not
-  // yet ported. Tracked in research/.
+  // xHCI2 (USB 3.0 controller, snps,dwc3 at 0x06A00000).
+  // Build #32: registration succeeded but XhciDxe ASSERTed because
+  // CAPLENGTH read back as 0 - the controller MMIO is dead even
+  // though Linux sees 0x01200030 there. Power domain SUN60IW2_PCK_USB2
+  // (PRCM) and/or DWC3 core reset still missing. Disable until we
+  // bring those up.
 #if 0
   Status = RegisterNonDiscoverableMmioDevice (
              NonDiscoverableDeviceTypeXhci,
              NonDiscoverableDeviceDmaTypeNonCoherent,
              NULL, NULL, 1,
-             0x06A00000ULL, 0x00008000ULL
+             0x06A00000ULL, 0x00100000ULL
              );
-  DEBUG ((DEBUG_INFO, "SunxiUsbDxe: xHCI register: %r\n", Status));
+  DEBUG ((DEBUG_ERROR, "SunxiUsbDxe: xHCI2 register: %r\n", Status));
 #endif
 
-  // Build #23: EHCI0 is disabled in sun60iw2 Linux DT (status="disabled");
-  // BSP only ever brings up EHCI1. Skip EHCI0 registration to avoid
-  // initialising a controller that may need OTG/DRD-mode handling we
-  // do not perform. Only register EHCI1.
-#if 0
+  // EHCI0 - left-bottom USB-A port. Build #31 fixed the
+  // OTG-PHY-routing order (OTG+0x420 &= ~BIT0 now happens before the
+  // EHCI0 SIDDQ-clear / PHY-reset sequence). Re-enable registration.
   Status = RegisterNonDiscoverableMmioDevice (
              NonDiscoverableDeviceTypeEhci,
              NonDiscoverableDeviceDmaTypeNonCoherent,
@@ -709,7 +715,7 @@ SunxiUsbDxeEntry (
              0x04101000ULL, 0x00000400ULL
              );
   DEBUG ((DEBUG_ERROR, "SunxiUsbDxe: EHCI0 register: %r\n", Status));
-#endif
+
 
   Status = RegisterNonDiscoverableMmioDevice (
              NonDiscoverableDeviceTypeEhci,
