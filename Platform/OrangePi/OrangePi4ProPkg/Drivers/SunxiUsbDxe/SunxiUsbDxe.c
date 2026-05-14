@@ -689,12 +689,54 @@ SunxiUsbDxeEntry (
       MmioRead32 (Base + CapL + 0x44)));
   }
 
-  // xHCI2 (USB 3.0 controller, snps,dwc3 at 0x06A00000).
-  // Build #32: registration succeeded but XhciDxe ASSERTed because
-  // CAPLENGTH read back as 0 - the controller MMIO is dead even
-  // though Linux sees 0x01200030 there. Power domain SUN60IW2_PCK_USB2
-  // (PRCM) and/or DWC3 core reset still missing. Disable until we
-  // bring those up.
+  // xHCI2 (USB 3.0 controller, snps,dwc3 at 0x06A00000). Build #34:
+  // Live PCK snapshot showed SUN60IW2_PCK_USB2 power domain (PCK+0x8000)
+  // already on at boot - so it isn't the missing piece. What we never
+  // did is touch the DWC3 core itself. In Linux dwc3_core_init() does a
+  // PHYSOFTRST + GCTL.CORESOFTRESET toggle, and dwc3_set_prtcap() sets
+  // PRTCAPDIR=HOST in GCTL. Without that, the xHCI register window
+  // exposed by the DWC3 wrapper stays as zeros (CAPLENGTH=0).
+  //
+  // Probe-then-init-then-probe so we can see what the CCU init alone
+  // gave us versus what the DWC3 reset/PRTCAP unlocks.
+  {
+    UINT32  Cap0, Cap1, GCtl;
+
+    Cap0 = MmioRead32 (0x06A00000);
+    DEBUG ((DEBUG_ERROR, "  xHCI2 pre-DWC3-init: +0x0000=0x%08x\n", Cap0));
+
+    // Assert PHY soft reset on both USB2 and USB3 PHY-cfg blocks.
+    MmioOr32  (0x06A00000 + 0xC200, BIT31);  // GUSB2PHYCFG0.PHYSOFTRST
+    MmioOr32  (0x06A00000 + 0xC2C0, BIT31);  // GUSB3PIPECTL0.PHYSOFTRST
+    MicroSecondDelay (200);
+    MmioAnd32 (0x06A00000 + 0xC200, ~(UINT32)BIT31);
+    MmioAnd32 (0x06A00000 + 0xC2C0, ~(UINT32)BIT31);
+    MicroSecondDelay (200);
+
+    // Toggle DWC3 core soft reset (GCTL bit 11).
+    GCtl = MmioRead32 (0x06A00000 + 0xC100);
+    DEBUG ((DEBUG_ERROR, "  DWC3 GCTL was 0x%08x\n", GCtl));
+    MmioOr32  (0x06A00000 + 0xC100, BIT11);
+    MicroSecondDelay (50);
+    MmioAnd32 (0x06A00000 + 0xC100, ~(UINT32)BIT11);
+    MicroSecondDelay (50);
+
+    // Set PRTCAPDIR = HOST (1) in GCTL[13:12]. Clear, then set bit 12.
+    GCtl = MmioRead32 (0x06A00000 + 0xC100);
+    GCtl &= ~(UINT32)(BIT12 | BIT13);
+    GCtl |=  BIT12;
+    MmioWrite32 (0x06A00000 + 0xC100, GCtl);
+    DEBUG ((DEBUG_ERROR, "  DWC3 GCTL now 0x%08x\n",
+      MmioRead32 (0x06A00000 + 0xC100)));
+
+    Cap1 = MmioRead32 (0x06A00000);
+    DEBUG ((DEBUG_ERROR, "  xHCI2 post-DWC3-init: +0x0000=0x%08x\n", Cap1));
+  }
+
+  // Build #34 result: GCTL itself reads/writes as 0 -> the whole xHCI
+  // MMIO window is still dead even after our CCU init. CCU is missing
+  // something (likely a bus-clock / MBUS gate / SUSPEND mux). Disable
+  // registration again until we figure out what.
 #if 0
   Status = RegisterNonDiscoverableMmioDevice (
              NonDiscoverableDeviceTypeXhci,
