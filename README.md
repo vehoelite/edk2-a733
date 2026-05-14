@@ -30,12 +30,11 @@ GOP driver that takes ownership of the DE3.0 mixer0 scanout pipeline.
 | GOP + GraphicsConsole   | ✅    | EDK2 Boot Manager + Shell prompt render on the LCD             |
 | GICv3 + ArchTimer       | ✅    | full architectural protocols                                   |
 | FAT / Partition / Disk  | ✅    | dispatched, ready for storage backends                         |
-| **USB host (EHCI1)**    | ✅    | **clean-room CCU + USB2 PHY bring-up; hubs work**              |
+| **USB-A right pair (EHCI1)** | ✅ | **both top + bottom right USB-A ports working**                |
 | **USB Mass Storage**    | ✅    | **enumerates as `BLK0`/`BLK1`/`FS0`/`CDROM` in EFI shell**     |
 | **USB HID keyboard**    | ✅    | **typing reaches the EFI shell prompt (wildcard ConIn)**       |
-| USB host (EHCI0)        | ⚠️    | PHY shares OTG block; bring-up ordering still WIP              |
-| USB 3.0 (xHCI)          | ❌    | Cadence Combo PHY + DWC3 stack not started                     |
-| USB-C / OTG             | ❌    | not started                                                    |
+| USB-A left bottom (EHCI0) | ❌  | PHY shares OTG block; bring-up ordering still WIP              |
+| USB-A left top (xHCI 3.0) | ❌  | Cadence Combo PHY + DWC3 stack not started                     |
 | PCIe / NVMe             | ⚠️    | link is up; config-space DBI is access-locked (see § walls)    |
 | Variable runtime        | ❌    | no SPI NOR variable backend yet                                |
 | ACPI                    | ❌    | no DSDT generator yet                                          |
@@ -302,15 +301,18 @@ through; PCIe and Ethernet remain.
 
 ### Wall 1 — USB host controllers ✅ EHCI working
 
-**As of v0.2 the EHCI side is working.** Clean-room implementation of
+**As of v0.2 the EHCI1 side is working.** Clean-room implementation of
 the sun60iw2 CCU + USB2 PHY bring-up sequence in
 [`SunxiUsbDxe.c`](Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiUsbDxe/SunxiUsbDxe.c).
 Hubs, mass-storage devices, and HID boot-protocol keyboards all work on
-EHCI1. EHCI0 still needs an OTG-PHY-share ordering fix. xHCI (USB 3.0)
-needs the **Cadence Combo PHY** serdes block at `0x06C00000` +
-`0x06C06000` plus the DWC3 stack — not started. VBUS gating through the
-**AXP515 PMIC** over I²C7 is not strictly required for the EHCI ports
-that have always-on VBUS, but would be for the USB-C OTG port.
+EHCI1, which on the Orange Pi 4 Pro is wired to the **right pair of
+USB-A ports** (top and bottom). EHCI0 (left bottom USB-A) still needs
+an ordering fix — it shares its USB2 PHY with the OTG controller block
+and we already do `OTG+0x420 &= ~BIT0` (`USBC_SelectPhyToHci`) but
+likely in the wrong order relative to PHY reset. xHCI (left top USB-A,
+USB 3.0) needs the **Cadence Combo PHY** serdes block at `0x06C00000`
++ `0x06C06000` plus the DWC3 stack — not started. The board’s USB-C
+is power-only, so there is no OTG/device-mode work to do.
 
 We also saved a complete CCU + USB PHY + USB controller register snapshot
 captured from a running BSP Linux kernel (USB working) so a future
@@ -402,12 +404,11 @@ grafted at `b03a21a`; this repo only contains the platform overlay.
 
 ## What's next
 
-- [ ] **Fix EHCI0** — share-PHY-with-OTG ordering quirk;
-      `OTG+0x420 &= ~BIT0` already done but probably needs to happen
-      before the PHY reset assert/deassert
-- [ ] **xHCI (USB 3.0)** — Cadence Combo PHY at `0x06C00000`/`0x06C06000`
-      + DWC3 controller stack
-- [ ] **OTG / USB-C** — needs AXP515 PMIC over I²C7 for VBUS gating
+- [ ] **Fix EHCI0** (left-bottom USB-A) — share-PHY-with-OTG ordering
+      quirk; `OTG+0x420 &= ~BIT0` already done but probably needs to
+      happen before the PHY reset assert/deassert
+- [ ] **xHCI (left-top USB-A, USB 3.0)** — Cadence Combo PHY at
+      `0x06C00000`/`0x06C06000` + DWC3 controller stack
 - [ ] **DesignWare PCIe** `PciHostBridgeLib` for sun60iw2 — find the
       DBI unlock register and re-enumerate
 - [ ] **Ethernet** — apply the same CCU + PHY pattern from `SunxiUsbDxe`
