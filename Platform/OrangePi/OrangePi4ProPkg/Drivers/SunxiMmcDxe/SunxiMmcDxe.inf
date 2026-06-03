@@ -1,0 +1,44 @@
+## @file
+#  SunxiMmcDxe — minimal EFI_BLOCK_IO driver for the A733 SMHC0 (SD slot).
+#
+#  State-replay driver: re-uses the SMHC0 controller in the state U-Boot left
+#  it (no SD identification sequence) and issues PIO block reads so EDK2 can
+#  read the kernel/initrd/dtb from the SD card directly. Installs BlockIo +
+#  a vendor device path for PartitionDxe to enumerate.
+#
+#  Copyright (c) 2026, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010006
+  BASE_NAME      = SunxiMmcDxe
+  FILE_GUID      = 4F3A2B1C-6D5E-4C7A-9B8F-2E1D0C3A4B5D
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = SunxiMmcDxeEntry
+
+[Sources]
+  SunxiMmcDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DebugLib
+  IoLib
+  DevicePathLib
+
+[Protocols]
+  gEfiBlockIoProtocolGuid          ## PRODUCES
+  gEfiDevicePathProtocolGuid       ## PRODUCES
+
+[Depex]
+  TRUE

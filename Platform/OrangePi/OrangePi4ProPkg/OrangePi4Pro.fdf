@@ -134,6 +134,9 @@
   INF  MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
   INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiUsbDxe/SunxiUsbDxe.inf
 
+  # SD card: SMHC0 state-replay BlockIo (PIO) so EDK2 reads /boot from SD.
+  INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiMmcDxe/SunxiMmcDxe.inf
+
   # PCIe / NVMe: state-replay of BSP-U-Boot-enumerated NVMe controller
   # TEMP-DISABLED (baseline bring-up): SunxiPcieDxe hangs in its entry on the
   # locked PCIe DBI @0x06000000 (6x MmioRead32 before first DEBUG, no AXI
@@ -163,6 +166,9 @@
   INF  MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf
 
   INF  ShellPkg/Application/Shell/Shell.inf
+
+  # BootDebian: native EDK2 -> EFI-stub kernel hand-off from USB (retires GRUB).
+  INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/BootDebian/BootDebian.inf
 
 ################################################################################
 [Rule.Common.SEC.SELF_RELOC]

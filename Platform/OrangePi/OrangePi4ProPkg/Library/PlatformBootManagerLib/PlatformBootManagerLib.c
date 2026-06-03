@@ -149,7 +149,8 @@ EFI_STATUS
 RegisterFvBootOption (
   IN  EFI_GUID  *FileGuid,
   IN  CHAR16    *Description,
-  IN  UINT32    Attributes
+  IN  UINT32    Attributes,
+  IN  UINTN     Position      // index in BootOrder; (UINTN)-1 = append
   )
 {
   EFI_STATUS                         Status;
@@ -226,7 +227,7 @@ RegisterFvBootOption (
                0
                );
     if (!EFI_ERROR (Status)) {
-      EfiBootManagerAddLoadOptionVariable (&Option, (UINTN)-1);
+      EfiBootManagerAddLoadOptionVariable (&Option, Position);
       EfiBootManagerFreeLoadOption (&Option);
     }
     FreePool (FullDp);
@@ -351,8 +352,18 @@ PlatformBootManagerAfterConsole (
   {
     EFI_GUID UiAppGuid = { 0x462CAA21, 0x7614, 0x4503,
                            { 0x83, 0x6E, 0x8A, 0xB6, 0xF4, 0x66, 0x23, 0x31 } };
-    RegisterFvBootOption (&UiAppGuid, L"Enter Setup",        LOAD_OPTION_ACTIVE | LOAD_OPTION_HIDDEN);
-    RegisterFvBootOption (&ShellGuid, L"UEFI Shell", LOAD_OPTION_ACTIVE);
+    //
+    // BootDebian: native EDK2 -> EFI-stub kernel hand-off from USB (retires
+    // the GRUB scaffolding). FILE_GUID of Drivers/BootDebian/BootDebian.inf.
+    //
+    EFI_GUID BootDebianGuid = { 0x9E1D4A7B, 0x3C2F, 0x4B6E,
+                                { 0xA8, 0xD1, 0x5F, 0x0C, 0x9B, 0x2E, 0x7A, 0x34 } };
+    RegisterFvBootOption (&UiAppGuid, L"Enter Setup",        LOAD_OPTION_ACTIVE | LOAD_OPTION_HIDDEN, (UINTN)-1);
+    // Debian first in BootOrder so EDK2 boots it by default after the timeout.
+    // If the USB isn't present BootDebian returns and BDS falls through to the
+    // remaining options (Shell / boot menu).
+    RegisterFvBootOption (&BootDebianGuid, L"Debian (native EDK2 hand-off)", LOAD_OPTION_ACTIVE, 0);
+    RegisterFvBootOption (&ShellGuid, L"UEFI Shell", LOAD_OPTION_ACTIVE, (UINTN)-1);
   }
 
   //

@@ -1,0 +1,42 @@
+## @file
+#  BootDebian — native EDK2 hand-off to an EFI-stub Linux kernel on USB.
+#  Installs the FDT config table from \board.dtb, registers \initrd via the
+#  Linux LoadFile2 protocol, and LoadImage/StartImage \Image. Retires GRUB.
+#
+#  Copyright (c) 2026, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010006
+  BASE_NAME      = BootDebian
+  FILE_GUID      = 9E1D4A7B-3C2F-4B6E-A8D1-5F0C9B2E7A34
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = BootDebianEntry
+
+[Sources]
+  BootDebian.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  MemoryAllocationLib
+  BaseMemoryLib
+  DevicePathLib
+  DebugLib
+  BaseLib
+
+[Protocols]
+  gEfiSimpleFileSystemProtocolGuid
+  gEfiLoadedImageProtocolGuid
+  gEfiLoadFile2ProtocolGuid
+  gEfiDevicePathProtocolGuid
+
+[Guids]
+  gEfiFileInfoGuid

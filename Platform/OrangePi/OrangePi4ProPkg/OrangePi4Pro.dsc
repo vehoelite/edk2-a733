@@ -349,6 +349,12 @@
   Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiUsbDxe/SunxiUsbDxe.inf
 
   #
+  # SD card: SMHC0 @ 0x04020000. State-replay BlockIo driver (PIO reads) so
+  # EDK2 can load the kernel/initrd/dtb from the SD directly — no USB stick.
+  #
+  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiMmcDxe/SunxiMmcDxe.inf
+
+  #
   # PCIe / NVMe: A733 DesignWare RC. DBI is locked from EDK2 so we adopt
   # the live state programmed by BSP U-Boot — SunxiPcieDxe registers the
   # NVMe controller at 0x22100000 as a NonDiscoverable NVMe device, and
@@ -439,3 +445,10 @@
     <PcdsFixedAtBuild>
       gEfiShellPkgTokenSpaceGuid.PcdShellLibAutoInitialize|FALSE
   }
+
+  #
+  # BootDebian — native EDK2 hand-off to an EFI-stub Linux kernel on USB
+  # (installs the FDT config table + initrd LoadFile2, then LoadImage/StartImage
+  # \Image). Registered as a boot option by PlatformBootManagerLib; retires GRUB.
+  #
+  Platform/OrangePi/OrangePi4ProPkg/Drivers/BootDebian/BootDebian.inf
