@@ -126,7 +126,7 @@
   INF  MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
   INF  FatPkg/EnhancedFatDxe/Fat.inf
 
-  INF  MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
+  INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiNonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
   INF  MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
   INF  MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
   INF  MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
@@ -134,8 +134,20 @@
   INF  MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
   INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiUsbDxe/SunxiUsbDxe.inf
 
+  # PCIe / NVMe: state-replay of BSP-U-Boot-enumerated NVMe controller
+  # TEMP-DISABLED (baseline bring-up): SunxiPcieDxe hangs in its entry on the
+  # locked PCIe DBI @0x06000000 (6x MmioRead32 before first DEBUG, no AXI
+  # response -> CPU stall) which bricks the boot before Shell. Re-enable once
+  # the DBI block is clocked/unlocked. See UART baseline 2026-06-02.
+  # INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiPcieDxe/SunxiPcieDxe.inf
+  INF  MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
+
   # Display: SimpleFB GOP (passes BSP-programmed framebuffer through to UEFI)
   INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSimpleFbGopDxe/SunxiSimpleFbGopDxe.inf
+
+  # SMBIOS protocol producer + Allwinner A733 record publisher.
+  INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
+  INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSmbiosDxe/SunxiSmbiosDxe.inf
 
   # GraphicsConsoleDxe: bind ConsoleOut to the GOP framebuffer so boot
   # manager menus / Shell prompt render on the panel, not just UART.
@@ -143,6 +155,8 @@
 
   INF  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
   INF  MdeModulePkg/Application/UiApp/UiApp.inf
+  INF  MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+  INF  MdeModulePkg/Universal/DriverHealthManagerDxe/DriverHealthManagerDxe.inf
   INF  MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
   INF  MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
   INF  MdeModulePkg/Universal/SetupBrowserDxe/SetupBrowserDxe.inf

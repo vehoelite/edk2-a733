@@ -215,7 +215,17 @@
   #
   # BDS boot timeout (seconds). 0 = boot immediately, 0xFFFF = wait forever.
   #
-  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|10
+  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|5
+
+  #
+  # Firmware vendor / version strings shown on the Front Page banner and
+  # in SMBIOS Type 0/1. Bumped per release; see commit log for the build
+  # number that goes with the rev.
+  #
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVendor|L"Orange Pi 4 Pro EDK2 Port (beg0fthend)"
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVersionString|L"v0.2-NVMe build #46"
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareReleaseDateString|L"2026-05-14"
+
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultBaudRate|115200
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultDataBits|8
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultParity|1
@@ -330,7 +340,7 @@
   # 0x04101000 / 0x04200000. SunxiUsbDxe registers them as NonDiscoverable
   # devices so the generic XhciDxe / EhciDxe drivers attach.
   #
-  MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
+  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiNonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
   MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
   MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
   MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
@@ -339,9 +349,32 @@
   Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiUsbDxe/SunxiUsbDxe.inf
 
   #
+  # PCIe / NVMe: A733 DesignWare RC. DBI is locked from EDK2 so we adopt
+  # the live state programmed by BSP U-Boot — SunxiPcieDxe registers the
+  # NVMe controller at 0x22100000 as a NonDiscoverable NVMe device, and
+  # NvmExpressDxe binds via the synthesised PciIo.
+  #
+  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiPcieDxe/SunxiPcieDxe.inf
+  MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
+
+  #
   # Display: SimpleFB GOP — exposes BSP-programmed framebuffer as GOP
   #
   Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSimpleFbGopDxe/SunxiSimpleFbGopDxe.inf
+
+  #
+  # SMBIOS: producer (generic) + platform record publisher. Without these
+  # the FrontPage falls back to the placeholder 'Wonder Computer Model
+  # 1000Z' strings; with them, Setup shows real CPU/memory/board info.
+  #
+  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf {
+    <LibraryClasses>
+      PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+  }
+  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSmbiosDxe/SunxiSmbiosDxe.inf {
+    <LibraryClasses>
+      PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+  }
 
   #
   # Network (stub — add actual PHY driver later)
@@ -360,9 +393,32 @@
       PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
   }
   MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
-  MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
-  MdeModulePkg/Universal/SetupBrowserDxe/SetupBrowserDxe.inf
-  MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf
+  MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf {
+    <LibraryClasses>
+      PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+  }
+  MdeModulePkg/Universal/SetupBrowserDxe/SetupBrowserDxe.inf {
+    <LibraryClasses>
+      PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+  }
+  MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf {
+    <LibraryClasses>
+      PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+  }
+
+  #
+  # BootManagerMenuApp — dedicated boot picker (F11/F12 hot-key target).
+  # DriverHealthManagerDxe — populates the 'Driver Health' menu entry in
+  # the Front Page so a half-attached driver can be inspected.
+  #
+  MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf {
+    <LibraryClasses>
+      PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+  }
+  MdeModulePkg/Universal/DriverHealthManagerDxe/DriverHealthManagerDxe.inf {
+    <LibraryClasses>
+      PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+  }
 
   #
   # UEFI Shell

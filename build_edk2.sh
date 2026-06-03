@@ -3,7 +3,7 @@
 # Usage: ./build_edk2.sh [--deploy]
 set -eo pipefail   # NOTE: no -u — edksetup.sh references unset vars
 
-BOARD_IP="192.168.0.244"
+BOARD_IP="192.168.0.207"
 BOARD_USER="orangepi"
 BOARD_PASS="orangepi"
 FD="Build/OrangePi4Pro/DEBUG_GCC/FV/ORANGEPI4PRO_EFI.fd"
@@ -71,18 +71,21 @@ echo "uImage built: $UIMG"
 
 # ── 4. Deploy (optional) ──────────────────────────────────────────────────────
 if [[ "${1:-}" == "--deploy" ]]; then
-    echo "Deploying to $BOARD_IP NVMe boot partition..."
+    # This card has no NVMe (reads 0xFF / not enumerated); boot is SD /boot only.
+    # boot.scr chainloads EDK2 only when the one-shot /boot/try_edk2 flag exists,
+    # so deploy also arms it. A board-side systemd unit clears it once Linux is up.
+    echo "Deploying EDK2 uImage to $BOARD_IP:/boot (SD) and arming try_edk2..."
     sshpass -p "$BOARD_PASS" scp -o StrictHostKeyChecking=no \
         "$UIMG" "${BOARD_USER}@${BOARD_IP}:/tmp/ORANGEPI4PRO_EFI.uimg"
     sshpass -p "$BOARD_PASS" ssh -o StrictHostKeyChecking=no \
         "${BOARD_USER}@${BOARD_IP}" \
         "echo $BOARD_PASS | sudo -S bash -c '
-          mountpoint -q /mnt/nvme || { mkdir -p /mnt/nvme && mount /dev/nvme0n1p1 /mnt/nvme; }
-          cp /tmp/ORANGEPI4PRO_EFI.uimg /mnt/nvme/boot/ORANGEPI4PRO_EFI.uimg
+          cp /tmp/ORANGEPI4PRO_EFI.uimg /boot/ORANGEPI4PRO_EFI.uimg
+          rm -f /boot/skip_edk2   # clear legacy hard-override (wins over try_edk2)
+          touch /boot/try_edk2
           sync
-          # Also update SD card /boot in case board boots from SD
-          cp /tmp/ORANGEPI4PRO_EFI.uimg /boot/ORANGEPI4PRO_EFI.uimg 2>/dev/null || true
-          sync
-          echo \"Deployed to NVMe: \$(md5sum /mnt/nvme/boot/ORANGEPI4PRO_EFI.uimg)\"
+          echo \"Deployed to SD /boot: \$(md5sum /boot/ORANGEPI4PRO_EFI.uimg)\"
+          echo \"try_edk2 armed (one-shot). Reboot to run EDK2.\"
         '"
+    echo "Next: sshpass -p $BOARD_PASS ssh ${BOARD_USER}@${BOARD_IP} 'echo $BOARD_PASS | sudo -S reboot'"
 fi

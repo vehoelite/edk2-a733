@@ -35,6 +35,7 @@
 [Guids]
   gEfiGlobalVariableGuid
   gEdkiiSerialPortLibVendorGuid
+  gEfiEndOfDxeEventGroupGuid
 
 [Protocols]
   gEfiSerialIoProtocolGuid
@@ -44,3 +45,5 @@
   gEfiGraphicsOutputProtocolGuid
 
 [Pcd]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVendor
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVersionString

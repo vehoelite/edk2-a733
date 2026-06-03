@@ -1,0 +1,39 @@
+## @file
+#  SunxiPcieDxe - register the BSP-already-enumerated NVMe controller
+#  on Allwinner A733 (sun60iw2) as an EDKII NonDiscoverable NVMe device
+#  so MdeModulePkg/Bus/Pci/NvmExpressDxe attaches to it.
+#
+#  Background: the A733 DesignWare PCIe RC has its DBI window locked by
+#  an Allwinner-specific unlock register we haven't identified yet, so
+#  we cannot re-enumerate. BSP U-Boot already does the link-up + iATU +
+#  BAR-assign, and the NVMe controller registers are accessible at
+#  fixed PA 0x22100000. We just adopt that state.
+#
+#  Copyright (c) 2026, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = SunxiPcieDxe
+  FILE_GUID      = 6B7E2D34-1A4F-4D8C-9E2F-7C9B5D3E1A20
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = SunxiPcieDxeEntry
+
+[Sources]
+  SunxiPcieDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  DebugLib
+  IoLib
+  NonDiscoverableDeviceRegistrationLib
+
+[Depex]
+  TRUE

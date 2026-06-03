@@ -1,0 +1,44 @@
+## @file
+#  SunxiSmbiosDxe — publishes SMBIOS Type 0/1/2/3/4/7/16/17/19/32 records
+#  for the Allwinner A733 (Orange Pi 4 Pro). Without this the EDK2 Front
+#  Page falls back to the placeholder strings ("Wonder Computer Model
+#  1000Z..."). With it, model/CPU/memory in Setup reflect real hardware.
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = SunxiSmbiosDxe
+  FILE_GUID                      = 71554B62-9E18-4F5C-9E3A-31F8C2E7A101
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = SunxiSmbiosEntryPoint
+
+[Sources]
+  SunxiSmbiosDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ArmPkg/ArmPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  MemoryAllocationLib
+  PcdLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiSmbiosProtocolGuid                ## CONSUMES
+
+[Pcd]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVendor
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVersionString
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareReleaseDateString
+  gArmTokenSpaceGuid.PcdSystemMemoryBase
+  gArmTokenSpaceGuid.PcdSystemMemorySize
+
+[Depex]
+  gEfiSmbiosProtocolGuid

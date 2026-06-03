@@ -30,6 +30,8 @@
   UefiDriverEntryPoint
   UefiBootServicesTableLib
   DebugLib
+  IoLib
+  TimerLib
   NonDiscoverableDeviceRegistrationLib
 
 [Depex]

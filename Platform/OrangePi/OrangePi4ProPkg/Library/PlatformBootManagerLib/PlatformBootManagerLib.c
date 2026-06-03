@@ -25,6 +25,7 @@
 #include <Protocol/GraphicsOutput.h>
 #include <Guid/SerialPortLibVendor.h>
 #include <Guid/GlobalVariable.h>
+#include <Guid/EventGroup.h>
 
 #pragma pack(1)
 typedef struct {
@@ -265,6 +266,49 @@ DumpBootOptions (
   EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
 }
 
+//
+// Signal gEfiEndOfDxeEventGroupGuid. Without this, MdeModulePkg's
+// SecurityStubDxe Defer3rdPartyImageLoad() returns EFI_ACCESS_DENIED for every
+// image loaded from outside the firmware volume — USB GRUB, the Linux kernel,
+// even a stock Shell.efi — because its mEndOfDxe flag stays FALSE. FV images
+// are exempt (FileFromFv), which is exactly why the built-in Shell/Setup ran
+// but USB boot was denied. Signal it here in BDS, before connecting devices
+// and running boot options, so 3rd-party (USB) images are allowed to load.
+//
+STATIC
+VOID
+EFIAPI
+EmptyCallback (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+}
+
+STATIC
+VOID
+SignalEndOfDxe (
+  VOID
+  )
+{
+  EFI_STATUS  Status;
+  EFI_EVENT   EndOfDxeEvent;
+
+  Status = gBS->CreateEventEx (
+                  EVT_NOTIFY_SIGNAL,
+                  TPL_CALLBACK,
+                  EmptyCallback,
+                  NULL,
+                  &gEfiEndOfDxeEventGroupGuid,
+                  &EndOfDxeEvent
+                  );
+  if (!EFI_ERROR (Status)) {
+    gBS->SignalEvent (EndOfDxeEvent);
+    gBS->CloseEvent (EndOfDxeEvent);
+    DEBUG ((DEBUG_ERROR, "PlatformBootManager: EndOfDxe signaled (USB/3rd-party image load enabled)\n"));
+  }
+}
+
 VOID
 EFIAPI
 PlatformBootManagerAfterConsole (
@@ -274,8 +318,21 @@ PlatformBootManagerAfterConsole (
   EFI_GUID  ShellGuid = { 0x7C04A583, 0x9E3E, 0x4f1c,
                           { 0xAD, 0x65, 0xE0, 0x52, 0x68, 0xD0, 0xB4, 0xD1 } };
 
-  Print (L"\r\nOrange Pi 4 Pro UEFI (Allwinner A733)\r\n");
-  Print (L"Press ESC for Boot Manager\r\n\r\n");
+  Print (L"\r\n");
+
+  //
+  // Enable loading of images from USB / other non-FV media (see note above).
+  //
+  SignalEndOfDxe ();
+  Print (L"========================================================\r\n");
+  Print (L" Orange Pi 4 Pro UEFI  (Allwinner A733, ARMv8.2-A)\r\n");
+  Print (L" Firmware: %s\r\n", (CHAR16 *)PcdGetPtr (PcdFirmwareVersionString));
+  Print (L" Vendor:   %s\r\n", (CHAR16 *)PcdGetPtr (PcdFirmwareVendor));
+  Print (L"========================================================\r\n");
+  Print (L"  ESC / F2  -  Setup\r\n");
+  Print (L"  F11 / F7  -  Boot Menu\r\n");
+  Print (L"  F12       -  PXE / Network boot (when available)\r\n");
+  Print (L"========================================================\r\n\r\n");
 
   //
   // Connect everything so block I/O, FAT, USB, NVMe etc. all attach;
@@ -287,13 +344,87 @@ PlatformBootManagerAfterConsole (
 
   //
   // Always keep the embedded UEFI Shell available as a recovery option.
+  // Also register UiApp explicitly so we can bind ESC/F2 directly to it
+  // (EfiBootManagerGetBootManagerMenu returns the BootManagerMenuApp
+  // boot picker on this build, which is bound to F11/F7 instead).
   //
-  RegisterFvBootOption (&ShellGuid, L"UEFI Shell", LOAD_OPTION_ACTIVE);
+  {
+    EFI_GUID UiAppGuid = { 0x462CAA21, 0x7614, 0x4503,
+                           { 0x83, 0x6E, 0x8A, 0xB6, 0xF4, 0x66, 0x23, 0x31 } };
+    RegisterFvBootOption (&UiAppGuid, L"Enter Setup",        LOAD_OPTION_ACTIVE | LOAD_OPTION_HIDDEN);
+    RegisterFvBootOption (&ShellGuid, L"UEFI Shell", LOAD_OPTION_ACTIVE);
+  }
 
   //
   // Print what we found so the user can see USB/SD/NVMe detection over UART.
   //
   DumpBootOptions ();
+
+  //
+  // Register hot-keys:
+  //   Enter        = CONTINUE (skip timeout, boot first option)
+  //   ESC / F2     = Setup (UiApp Front Page)  -- our SMBIOS-populated UI
+  //   F7  / F11    = Boot Manager Menu (BootManagerMenuApp picker)
+  //
+  {
+    EFI_STATUS                    KeyStatus;
+    EFI_INPUT_KEY                 Enter;
+    EFI_INPUT_KEY                 F2;
+    EFI_INPUT_KEY                 Esc;
+    EFI_INPUT_KEY                 F7;
+    EFI_INPUT_KEY                 F11;
+    EFI_BOOT_MANAGER_LOAD_OPTION  BootMenu;
+    EFI_BOOT_MANAGER_LOAD_OPTION *Options;
+    UINTN                         OptionCount;
+    UINTN                         Index;
+    UINT16                        SetupOption;
+    EFI_GUID                      UiAppGuid = { 0x462CAA21, 0x7614, 0x4503,
+                                                { 0x83, 0x6E, 0x8A, 0xB6, 0xF4, 0x66, 0x23, 0x31 } };
+
+    Enter.ScanCode    = SCAN_NULL;
+    Enter.UnicodeChar = CHAR_CARRIAGE_RETURN;
+    EfiBootManagerRegisterContinueKeyOption (0, &Enter, NULL);
+
+    //
+    // Find the UiApp boot option we just registered and bind ESC/F2 to it.
+    //
+    SetupOption = 0xFFFF;
+    Options = EfiBootManagerGetLoadOptions (&OptionCount, LoadOptionTypeBoot);
+    for (Index = 0; Index < OptionCount; Index++) {
+      if ((Options[Index].Description != NULL) &&
+          (StrCmp (Options[Index].Description, L"Enter Setup") == 0)) {
+        SetupOption = (UINT16)Options[Index].OptionNumber;
+        break;
+      }
+    }
+    EfiBootManagerFreeLoadOptions (Options, OptionCount);
+
+    if (SetupOption != 0xFFFF) {
+      Esc.ScanCode    = SCAN_ESC;
+      Esc.UnicodeChar = CHAR_NULL;
+      F2.ScanCode     = SCAN_F2;
+      F2.UnicodeChar  = CHAR_NULL;
+      EfiBootManagerAddKeyOptionVariable (NULL, SetupOption, 0, &Esc, NULL);
+      EfiBootManagerAddKeyOptionVariable (NULL, SetupOption, 0, &F2,  NULL);
+    }
+
+    //
+    // F7 / F11 -> Boot Manager Menu picker
+    //
+    KeyStatus = EfiBootManagerGetBootManagerMenu (&BootMenu);
+    if (!EFI_ERROR (KeyStatus)) {
+      F7.ScanCode     = SCAN_F7;
+      F7.UnicodeChar  = CHAR_NULL;
+      F11.ScanCode    = SCAN_F11;
+      F11.UnicodeChar = CHAR_NULL;
+      EfiBootManagerAddKeyOptionVariable (
+        NULL, (UINT16)BootMenu.OptionNumber, 0, &F7,  NULL);
+      EfiBootManagerAddKeyOptionVariable (
+        NULL, (UINT16)BootMenu.OptionNumber, 0, &F11, NULL);
+      EfiBootManagerFreeLoadOption (&BootMenu);
+    }
+    (VOID)UiAppGuid;
+  }
 }
 
 VOID
