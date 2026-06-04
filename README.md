@@ -7,13 +7,29 @@ the panel**, with a serial fallback over UART0, **a working USB host
 stack with hub + mass-storage + keyboard support**, and a from-scratch
 GOP driver that takes ownership of the DE3.0 mixer0 scanout pipeline.
 
+> **🏆 v0.4 — it boots Ubuntu 26.04 LTS from NVMe.** Our UEFI
+> (`EFI v2.70 by Orange Pi 4 Pro EDK2 Port`) → BDS auto-discovers a stock
+> distro's `\EFI\BOOT\BOOTAA64.EFI` (Ubuntu shim) → GRUB → kernel →
+> **Ubuntu 26.04 "Resolute Raccoon" rooted on a 931 GB NVMe**, networked,
+> **SSH-reachable**. PCIe + the Cadence Combo PHY come up and the NVMe
+> enumerates. Verified live over SSH: `findmnt /` → `/dev/nvme0n1p1 ext4`,
+> `efi: EFI v2.70 by Orange Pi 4 Pro EDK2 Port`. We also proved a **100 %
+> stock upstream Ubuntu kernel boots via our UEFI** (8 CPUs, GICv3, PSCI,
+> full initrd, casper `/init`) — it only stops short of a full distro
+> because mainline Linux has no driver for the A733's vendor controllers
+> yet (the SoC is brand-new). The v0.4 boot therefore uses the Allwinner
+> BSP kernel with the Ubuntu userland (the standard SBC recipe), and the
+> [v2 driver-porting recon](V2-DRIVER-PORTING-RECON.md) maps the path to a
+> fully stock-kernel boot. See [§ v0.4 — Ubuntu on NVMe](#v04--ubuntu-on-nvme).
+
 > **🏆 v0.3 — it boots Debian.** EDK2 (as BL33) → GRUB (off a USB stick)
 > → an **EFI-stub Linux kernel** → a full **Debian** userland with the
 > rootfs on the SD card. Verified on hardware: `/sys/firmware/efi`
 > present (the kernel only creates that when handed off by UEFI),
-> autologin reached, ssh-reachable, stable. This is the headline goal of
-> the port — a hand-rolled UEFI firmware booting a real Linux distro on
-> the A733. See [§ v0.3 — booting Debian](#v03--booting-debian).
+> autologin reached, ssh-reachable, stable. Later: EDK2 boots Debian
+> **directly from the SD card with no USB stick** (`SunxiMmcDxe` PIO
+> BlockIo → PartitionDxe → FAT → native `BootDebian` hand-off).
+> See [§ v0.3 — booting Debian](#v03--booting-debian).
 
 > **Authorship.** This entire port — SoC bring-up, DXE driver
 > selection, library-class wiring, console-device-path construction,
@@ -37,7 +53,10 @@ GOP driver that takes ownership of the DE3.0 mixer0 scanout pipeline.
 
 | Subsystem               | State | Notes                                                          |
 | ----------------------- | ----- | -------------------------------------------------------------- |
-| **Boots Debian**        | ✅    | **EDK2 → GRUB (USB) → EFI-stub kernel → Debian; `/sys/firmware/efi` present, ssh up** |
+| **Boots Ubuntu 26.04 from NVMe** | ✅ | **v0.4: EDK2 → shim → GRUB → kernel → Ubuntu 26.04 LTS on `/dev/nvme0n1p1`, networked, SSH-reachable** |
+| **Boots Debian (SD, no USB)** | ✅ | **`SunxiMmcDxe` PIO BlockIo → PartitionDxe → FAT → native `BootDebian` hand-off — no USB stick** |
+| **Stock distro UEFI path** | ✅ | **BDS auto-discovers `\EFI\BOOT\BOOTAA64.EFI`; a 100% stock Ubuntu kernel boots (blocked only by mainline lacking A733 controller drivers)** |
+| **Boots Debian (USB)**  | ✅    | **EDK2 → GRUB (USB) → EFI-stub kernel → Debian; `/sys/firmware/efi` present, ssh up** |
 | Boot to UEFI Shell      | ✅    | UART + native panel                                            |
 | Native panel display    | ✅    | DE3.0 mixer0 scanout takeover; 1024×600 BGRA8888               |
 | GOP + GraphicsConsole   | ✅    | EDK2 Boot Manager + Shell prompt render on the LCD             |
@@ -50,9 +69,10 @@ GOP driver that takes ownership of the DE3.0 mixer0 scanout pipeline.
 | **DTB → kernel hand-off** | ✅  | **via GRUB's `devicetree` + `linux` on a USB stick (native EDK2 path still TODO)** |
 | USB-A left bottom (EHCI0) | ⚠️  | PHY up + registered (UTMI_STAT=0x08, PORTSC=0x3000); jack physical wiring TBD |
 | USB-A left top (xHCI 3.0) | ❌  | DWC3 wrapper alive but xHCI MMIO dead — needs Cadence Combo PHY init at `0x06C00000` |
-| PCIe / NVMe             | ⚠️    | `SunxiPcieDxe` **disabled** (entry hangs on locked DBI @`0x06000000`); BSP Linux *does* enumerate the NVMe, so the init sequence is replicable |
-| Variable runtime        | ❌    | no SPI NOR variable backend yet                                |
+| **PCIe / NVMe (under Linux)** | ✅ | **the booted kernel brings up the Cadence Combo PHY @`0x06C00000` → PCIe → NVMe (`nvme0n1`); v0.4 roots Ubuntu on it.** In *EDK2 itself* `SunxiPcieDxe` is still disabled (DBI @`0x06000000` hang) — EDK2-side NVMe is future work |
+| Variable runtime        | ❌    | no SPI NOR variable backend yet (see `## SPI NOR` notes)       |
 | ACPI                    | ❌    | no DSDT generator yet                                          |
+| Stock-kernel A733 drivers | 🚧  | mainline lacks MMC/PCIe/USB drivers for `sun60iw2`; v2 campaign mapped in [V2-DRIVER-PORTING-RECON.md](V2-DRIVER-PORTING-RECON.md) |
 
 ### Visual proof — v0.2
 
