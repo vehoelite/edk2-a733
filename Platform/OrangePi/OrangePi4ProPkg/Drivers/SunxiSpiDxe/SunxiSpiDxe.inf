@@ -1,0 +1,40 @@
+## @file
+#  SunxiSpiDxe — native SPI master + SPI-NOR probe for the A733 (SPI0).
+#
+#  First step toward EDK2 owning the on-board 16 MB SPI-NOR (mtd0): a
+#  state-replay PIO SPI master for SPI0 @ 0x02540000 ("sunxi-spi-v1.3").
+#  This revision is READ-ONLY — it issues JEDEC READ_ID to prove the
+#  controller talks to the flash, with no risk to the live boot chain.
+#  Next: EFI_SPI_HC_PROTOCOL (for MdeModulePkg's SpiNorFlashJedecSfdp) and
+#  a UEFI variable store in flash.
+#
+#  Copyright (c) 2026, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010006
+  BASE_NAME      = SunxiSpiDxe
+  FILE_GUID      = 5C2B7A9D-3E4F-4D8B-9A1C-6F0E2D3B5A7C
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = SunxiSpiDxeEntry
+
+[Sources]
+  SunxiSpiDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  IoLib
+
+[Depex]
+  TRUE

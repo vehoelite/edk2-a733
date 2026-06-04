@@ -137,6 +137,9 @@
   # SD card: SMHC0 state-replay BlockIo (PIO) so EDK2 reads /boot from SD.
   INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiMmcDxe/SunxiMmcDxe.inf
 
+  # SPI0 master + SPI-NOR probe (read-only): toward EDK2-owned flash + NV vars.
+  INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSpiDxe/SunxiSpiDxe.inf
+
   # PCIe / NVMe: state-replay of BSP-U-Boot-enumerated NVMe controller
   # TEMP-DISABLED (baseline bring-up): SunxiPcieDxe hangs in its entry on the
   # locked PCIe DBI @0x06000000 (6x MmioRead32 before first DEBUG, no AXI

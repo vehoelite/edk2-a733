@@ -355,6 +355,12 @@
   Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiMmcDxe/SunxiMmcDxe.inf
 
   #
+  # SPI0 master + SPI-NOR probe (state-replay PIO). Read-only first step
+  # toward EDK2 owning the on-board 16 MB SPI-NOR -> persistent UEFI vars.
+  #
+  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSpiDxe/SunxiSpiDxe.inf
+
+  #
   # PCIe / NVMe: A733 DesignWare RC. DBI is locked from EDK2 so we adopt
   # the live state programmed by BSP U-Boot — SunxiPcieDxe registers the
   # NVMe controller at 0x22100000 as a NonDiscoverable NVMe device, and
