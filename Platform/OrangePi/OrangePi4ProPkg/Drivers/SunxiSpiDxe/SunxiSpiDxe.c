@@ -67,6 +67,18 @@
 #define CCU_SPI0_BUS_RST         BIT16    // bus reset (1 = deasserted)
 
 //
+// The COMPLETE live CCU SPI0_CLK value read from the working Linux state via
+// /dev/mem: 0x81000005 = gate(BIT31) | src=PLL_PERI(bits[26:24]=001) |
+// N=1(bits[9:8]=0) | M=6(bits[3:0]=5). The crucial fix: the BSP driver sets
+// the SPI module-clock *rate* through the CCU (clk_set_rate -> this very
+// source+divider), it does NOT program the controller's CCR for the SCK
+// frequency. We previously only OR'd in the gate bit and left the source mux
+// and divider at reset defaults -> wrong/garbage SCK -> all-zero reads.
+// Replicate the exact working register so SCK matches the flash's 50 MHz.
+//
+#define CCU_SPI0_CLK_LIVE        0x81000005
+
+//
 // Register offsets (from BSP spi-ng/spi-sunxi.h — standard sunxi SPI v1.3).
 //
 #define SPI_VER_REG              0x00
@@ -116,9 +128,14 @@
 
 //
 // Burst-count register field masks (MTC.MWTC, BCC.STC) — 24-bit counts.
+// BCC also holds DBC (dummy burst count, bits 27:24) and the dual/quad enables.
 //
 #define SPI_MWTC_MASK            0x00FFFFFF
 #define SPI_BCC_STC_MASK         0x00FFFFFF
+#define SPI_BCC_DBC_SHIFT        24
+#define SPI_BCC_DBC_MASK         (0xFU << SPI_BCC_DBC_SHIFT)
+#define SPI_BCC_QUAD_EN          BIT29
+#define SPI_BCC_DRM              BIT28  // dual mode enable
 
 //
 // FIFO control bits.
@@ -198,11 +215,11 @@ SpiCcuEnable (
 {
   UINT32  V;
 
-  // 1. Enable the SPI0 module clock (gate). The divider/mux U-Boot/BSP
-  //    programmed is left as-is; we only assert the gate so a clock runs.
-  V  = MmioRead32 (SUNXI_CCU_BASE + CCU_SPI0_CLK_REG);
-  V |= CCU_SPI0_CLK_GATE;
-  MmioWrite32 (SUNXI_CCU_BASE + CCU_SPI0_CLK_REG, V);
+  // 1. Program the SPI0 module clock to the COMPLETE working value
+  //    (gate + PLL_PERI source + /6 divider). U-Boot leaves SPI0 unclocked
+  //    and we must NOT just gate the reset-default mux/divider (which gave a
+  //    wrong SCK and all-zero reads) — write the exact live register instead.
+  MmioWrite32 (SUNXI_CCU_BASE + CCU_SPI0_CLK_REG, CCU_SPI0_CLK_LIVE);
 
   // 2. Bus gate ON, then 3. deassert bus reset (BGR register holds both).
   V  = MmioRead32 (SUNXI_CCU_BASE + CCU_SPI0_BGR_REG);
@@ -214,7 +231,7 @@ SpiCcuEnable (
   MmioWrite32 (SUNXI_CCU_BASE + CCU_SPI0_BGR_REG, V);
 
   DEBUG ((DEBUG_ERROR,
-    "SunxiSpi: CCU SPI0 clk=0x%08x bgr=0x%08x (clocked+dereset)\n",
+    "SunxiSpi: CCU SPI0 clk=0x%08x bgr=0x%08x (expect clk=0x81000005)\n",
     MmioRead32 (SUNXI_CCU_BASE + CCU_SPI0_CLK_REG),
     MmioRead32 (SUNXI_CCU_BASE + CCU_SPI0_BGR_REG)));
 }
@@ -282,15 +299,89 @@ SpiMasterEnable (
 }
 
 /**
-  Full-duplex-style half-duplex PIO exchange: write TxLen bytes from Tx,
-  then read RxLen bytes into Rx. Uses single-bit mode (MBC = total, MTC =
-  bytes actually driven on MOSI, BCC.STC = single-transmit count).
+  Program the burst-count registers exactly as the BSP's
+  sunxi_spi_set_bc_tc_stc() does:
+    MBC      = tx_len + rx_len + dummy   (total bytes clocked on the bus)
+    MTC.MWTC = tx_len                    (bytes actually DRIVEN on MOSI)
+    BCC.STC  = stc_len                   (single-mode transmit count)
+    BCC.DBC  = dummy                     (dummy burst count)
+  Single-bit mode only here (no dual/quad), so clear those enables.
+**/
+STATIC
+VOID
+SpiSetBurst (
+  IN UINTN  TxLen,
+  IN UINTN  RxLen,
+  IN UINTN  StcLen,
+  IN UINTN  Dummy
+  )
+{
+  UINT32  V;
 
-  This is the minimal sequence to issue a command + read a response, which
-  is all the READ_ID / SFDP probe needs.
+  SpiWr (SPI_MBC_REG, (UINT32)(TxLen + RxLen + Dummy));
+  SpiWr (SPI_MTC_REG, (UINT32)TxLen & SPI_MWTC_MASK);
+
+  V  = SpiRd (SPI_BCC_REG);
+  V &= ~(SPI_BCC_STC_MASK | SPI_BCC_DBC_MASK | SPI_BCC_QUAD_EN | SPI_BCC_DRM);
+  V |= ((UINT32)StcLen & SPI_BCC_STC_MASK);
+  V |= (((UINT32)Dummy << SPI_BCC_DBC_SHIFT) & SPI_BCC_DBC_MASK);
+  SpiWr (SPI_BCC_REG, V);
+}
+
+/**
+  Run one single-mode burst and wait for XCH to self-clear.
+
+  @retval EFI_SUCCESS  Burst completed (XCH cleared).
+  @retval EFI_TIMEOUT  XCH never cleared.
+**/
+STATIC
+EFI_STATUS
+SpiRunBurst (
+  IN CONST CHAR8  *Tag
+  )
+{
+  UINTN   Timeout;
+  UINT32  V;
+
+  DEBUG ((DEBUG_ERROR,
+    "SunxiSpi:  %a pre-XCH TC=0x%08x MBC=0x%x MTC=0x%x BCC=0x%x FIFO_STA=0x%08x\n",
+    Tag, SpiRd (SPI_TC_REG), SpiRd (SPI_MBC_REG), SpiRd (SPI_MTC_REG),
+    SpiRd (SPI_BCC_REG), SpiRd (SPI_FIFO_STA_REG)));
+
+  V  = SpiRd (SPI_TC_REG);
+  V |= SPI_TC_XCH;
+  SpiWr (SPI_TC_REG, V);
+
+  for (Timeout = 0; Timeout < 1000000; Timeout++) {
+    if ((SpiRd (SPI_TC_REG) & SPI_TC_XCH) == 0) {
+      break;
+    }
+  }
+
+  DEBUG ((DEBUG_ERROR,
+    "SunxiSpi:  %a post-XCH (to=%u) TC=0x%08x FIFO_STA=0x%08x INT_STA=0x%08x\n",
+    Tag, (UINT32)Timeout, SpiRd (SPI_TC_REG), SpiRd (SPI_FIFO_STA_REG),
+    SpiRd (SPI_INT_STA_REG)));
+
+  return (Timeout >= 1000000) ? EFI_TIMEOUT : EFI_SUCCESS;
+}
+
+/**
+  Half-duplex command + read, done as the BSP does it: TWO separate single-mode
+  bursts with chip-select held low across both.
+
+    1. TX burst : set_bc_tc_stc(tx=TxLen, rx=0, stc=TxLen, dummy=0). DHB set so
+       the bytes clocked-in during the command are discarded by hardware.
+    2. RX burst : set_bc_tc_stc(tx=0, rx=RxLen, stc=0, dummy=0). MTC=0 means
+       NOTHING is driven on MOSI; the controller clocks RxLen bytes purely to
+       receive, and they land in the RX FIFO.
+
+  Our previous single combined burst (MBC=total, MTC=TxLen, DHB) is what made
+  reads return 0: with DHB the received bytes are discarded, and there was no
+  pure-RX (MTC=0) phase to actually capture the response.
 
   @retval EFI_SUCCESS      Exchange completed.
-  @retval EFI_TIMEOUT      Controller did not complete the burst.
+  @retval EFI_TIMEOUT      A burst did not complete.
 **/
 STATIC
 EFI_STATUS
@@ -301,98 +392,67 @@ SpiXfer (
   IN  UINTN        RxLen
   )
 {
-  UINTN   Total;
-  UINTN   i;
-  UINTN   Timeout;
-  UINT32  V;
+  UINTN       i;
+  UINT32      V;
+  EFI_STATUS  Status;
 
-  Total = TxLen + RxLen;
-  if ((Total == 0) || (Total > 64)) {
-    // First cut: single-FIFO-depth (64) transfers only — fine for ID/SFDP.
+  if (((TxLen + RxLen) == 0) || (TxLen > 64) || (RxLen > 64)) {
     return EFI_INVALID_PARAMETER;
   }
 
   SpiResetFifo ();
 
-  // Chip-select: SW owns SS, CS0, mode 0, SPOL=1; drive SS LOW = asserted for
-  // the burst. (DHB matches live Linux; we still capture all MBC bytes in the
-  // RX FIFO and skip the first TxLen when draining.)
+  // Chip-select setup: SW owns SS, CS0, mode 0, SPOL=1, DHB on (half-duplex).
+  // Assert SS LOW for the whole exchange and hold it across both bursts.
   V  = SpiRd (SPI_TC_REG);
   V |= SPI_TC_SS_OWNER;
-  V &= ~SPI_TC_SS_SEL_MASK;      // CS0
-  V &= ~(SPI_TC_CPOL | SPI_TC_CPHA);  // mode 0
-  V |=  SPI_TC_SPOL;             // SS active low
-  V |=  SPI_TC_DHB;             // match live HW
-  V &= ~SPI_TC_SS_LEVEL;        // SS low = asserted (SPOL active-low)
+  V &= ~SPI_TC_SS_SEL_MASK;            // CS0
+  V &= ~(SPI_TC_CPOL | SPI_TC_CPHA);   // mode 0
+  V |=  SPI_TC_SPOL;                   // SS active low
+  V |=  SPI_TC_DHB;                    // discard half-duplex burst (BSP default)
+  V &= ~SPI_TC_SS_LEVEL;               // SS low = asserted
   SpiWr (SPI_TC_REG, V);
 
-  // Burst counts (mirror BSP single-mode cmd+read):
-  //   MBC  = total bytes clocked on the bus (tx + rx)
-  //   MTC.MWTC = bytes actually driven on MOSI (the command/address)
-  //   BCC.STC  = single-mode transmit count (= tx); DBC dummy = 0
-  SpiWr (SPI_MBC_REG, (UINT32)Total);
-  SpiWr (SPI_MTC_REG, (UINT32)TxLen & SPI_MWTC_MASK);
-  SpiWr (SPI_BCC_REG, (UINT32)TxLen & SPI_BCC_STC_MASK);
-
-  // Preload the TX FIFO with the command/address bytes.
-  for (i = 0; i < TxLen; i++) {
-    MmioWrite8 (mSpiBase + SPI_TXDATA_REG, Tx[i]);
-  }
-
-  DEBUG ((DEBUG_ERROR,
-    "SunxiSpi:  pre-XCH GC=0x%08x TC=0x%08x MBC=0x%x MTC=0x%x BCC=0x%x FIFO=0x%08x\n",
-    SpiRd (SPI_GC_REG), SpiRd (SPI_TC_REG), SpiRd (SPI_MBC_REG),
-    SpiRd (SPI_MTC_REG), SpiRd (SPI_BCC_REG), SpiRd (SPI_FIFO_STA_REG)));
-
-  // Start the exchange.
-  V  = SpiRd (SPI_TC_REG);
-  V |= SPI_TC_XCH;
-  SpiWr (SPI_TC_REG, V);
-
-  // Wait for XCH to self-clear (burst complete).
-  for (Timeout = 0; Timeout < 1000000; Timeout++) {
-    if ((SpiRd (SPI_TC_REG) & SPI_TC_XCH) == 0) {
-      break;
+  // ---- Phase 1: transmit the command (TxLen bytes driven on MOSI) ----
+  if (TxLen > 0) {
+    SpiSetBurst (TxLen, 0, TxLen, 0);
+    for (i = 0; i < TxLen; i++) {
+      MmioWrite8 (mSpiBase + SPI_TXDATA_REG, Tx[i]);
+    }
+    Status = SpiRunBurst ("TX");
+    if (EFI_ERROR (Status)) {
+      goto Done;
     }
   }
-  DEBUG ((DEBUG_ERROR,
-    "SunxiSpi: post-XCH (timeout=%u) TC=0x%08x FIFO_STA=0x%08x INT_STA=0x%08x\n",
-    (UINT32)Timeout, SpiRd (SPI_TC_REG), SpiRd (SPI_FIFO_STA_REG),
-    SpiRd (SPI_INT_STA_REG)));
 
-  if (Timeout >= 1000000) {
-    // Deassert SS and bail.
-    V  = SpiRd (SPI_TC_REG);
-    V |= SPI_TC_SS_LEVEL;
-    SpiWr (SPI_TC_REG, V);
-    return EFI_TIMEOUT;
-  }
+  // ---- Phase 2: read the response (MTC=0 -> pure receive) ----
+  if (RxLen > 0) {
+    SpiSetBurst (0, RxLen, 0, 0);
+    Status = SpiRunBurst ("RX");
+    if (EFI_ERROR (Status)) {
+      goto Done;
+    }
 
-  // The controller clocks MBC = (TxLen+RxLen) bytes total and captures EVERY
-  // received byte into the RX FIFO — including the TxLen "dummy" bytes shifted
-  // in while we were driving the command on MOSI. So discard the first TxLen
-  // RX bytes, then the next RxLen bytes are the real response.
-  for (i = 0; i < (TxLen + RxLen); i++) {
-    UINTN   Guard;
-    UINT8   B;
-    for (Guard = 0; Guard < 1000000; Guard++) {
-      UINT32  Sta = SpiRd (SPI_FIFO_STA_REG);
-      if (((Sta >> SPI_FIFO_STA_RX_CNT_SHIFT) & SPI_FIFO_STA_RX_CNT_MASK) != 0) {
-        break;
+    for (i = 0; i < RxLen; i++) {
+      UINTN  Guard;
+      for (Guard = 0; Guard < 1000000; Guard++) {
+        UINT32  Sta = SpiRd (SPI_FIFO_STA_REG);
+        if (((Sta >> SPI_FIFO_STA_RX_CNT_SHIFT) & SPI_FIFO_STA_RX_CNT_MASK) != 0) {
+          break;
+        }
       }
-    }
-    B = MmioRead8 (mSpiBase + SPI_RXDATA_REG);
-    if (i >= TxLen) {
-      Rx[i - TxLen] = B;
+      Rx[i] = MmioRead8 (mSpiBase + SPI_RXDATA_REG);
     }
   }
 
+  Status = EFI_SUCCESS;
+
+Done:
   // Deassert chip select.
   V  = SpiRd (SPI_TC_REG);
   V |= SPI_TC_SS_LEVEL;
   SpiWr (SPI_TC_REG, V);
-
-  return EFI_SUCCESS;
+  return Status;
 }
 
 /**
@@ -435,17 +495,11 @@ SunxiSpiDxeEntry (
   DEBUG ((DEBUG_ERROR, "SunxiSpi: post-clock GC=0x%08x TC=0x%08x VER=0x%08x\n",
           SpiRd (SPI_GC_REG), SpiRd (SPI_TC_REG), SpiRd (SPI_VER_REG)));
 
-  // Soft-reset the controller (it was held in reset until now), then enable.
-  SpiWr (SPI_GC_REG, SpiRd (SPI_GC_REG) | SPI_GC_SRST);
-  {
-    UINTN  T;
-    for (T = 0; T < 100000; T++) {
-      if ((SpiRd (SPI_GC_REG) & SPI_GC_SRST) == 0) {
-        break;
-      }
-    }
-  }
-
+  // NOTE: no gratuitous GC.SRST here. The BSP sunxi_spi_hw_init() does NOT
+  // soft-reset in its normal init path (SRST appears only in runtime error
+  // recovery). Issuing it after clock+pinmux was leaving the block in a
+  // half-initialised state; we now follow the vendor order directly:
+  // enable bus -> set master -> config TC (mode0) inside SpiMasterEnable().
   SpiMasterEnable ();
 
   Status = NorReadId (Id);
