@@ -121,6 +121,7 @@
 #define SPI_TC_SS_OWNER          BIT6   // SS controlled by software level
 #define SPI_TC_SS_LEVEL          BIT7   // SS output level (when SW owner)
 #define SPI_TC_DHB               BIT8   // discard unused (half-duplex) burst
+#define SPI_TC_SSCTL             BIT3   // 0=SS stays asserted between bursts (READ_ID)
 #define SPI_TC_SS_SEL_MASK       (3U << 4)  // bits 5:4 select CS0..3
 #define SPI_TC_SPOL              BIT2   // SS polarity (1 = active low, per live HW)
 #define SPI_TC_CPOL              BIT1   // clock polarity
@@ -157,6 +158,10 @@
 #define NOR_CMD_READ_ID          0x9F  // JEDEC READ ID -> 3 bytes (mfr, type, cap)
 #define NOR_CMD_RDSR             0x05  // read status register
 #define NOR_CMD_SFDP             0x5A  // read SFDP (addr + 1 dummy)
+#define NOR_CMD_RSTEN            0x66  // reset-enable (must precede RST)
+#define NOR_CMD_RST              0x99  // software reset (return to defaults)
+#define NOR_CMD_RELEASE_DPD      0xAB  // release from deep power-down / read electronic sig
+#define NOR_CMD_EXIT_QPI         0xFF  // exit QPI / continuous-read reset (mode-bit clear)
 
 STATIC UINTN  mSpiBase = SUNXI_SPI0_BASE;
 
@@ -180,8 +185,13 @@ SpiWr (
 }
 
 /**
-  Mux Port C pins PC2/PC3/PC4 to SPI0 (function 5). Without this MISO/MOSI/
-  CLK aren't connected to the controller and every read returns 0.
+  Mux Port C pins PC1/PC2/PC3/PC4 to SPI0 (function 5). On the Orange Pi 4 Pro
+  the working SPI0-NOR bus is PC1=CLK, PC2=MOSI, PC3=CS0, PC4=MISO — verified
+  by reading the LIVE Linux mux during an active mtd0 transfer: PIO+0x40
+  PC_CFG0 = 0x01155550 (PC1..PC4 all = 0x5), and 2.6M samples confirm CLK is
+  NOT on PC12 (PC_CFG1 stays 0). Earlier code muxed only PC2/3/4 and left PC1
+  (CLK) at function 0 — no clock reached the flash, so every READ_ID returned
+  0x00. Muxing PC1 too is the fix.
 **/
 STATIC
 VOID
@@ -192,14 +202,15 @@ SpiPinmux (
   UINT32  V;
 
   V = MmioRead32 (SUNXI_PIO_BASE + PIO_PC_CFG0_REG);
-  // Each pin is a 4-bit field; PC2=bits[11:8], PC3=[15:12], PC4=[19:16].
-  V &= ~((0xFU << (2 * 4)) | (0xFU << (3 * 4)) | (0xFU << (4 * 4)));
-  V |=  ((UINT32)PIO_SPI0_FUNC << (2 * 4))
+  // Each pin is a 4-bit field; PC1=bits[7:4], PC2=[11:8], PC3=[15:12], PC4=[19:16].
+  V &= ~((0xFU << (1 * 4)) | (0xFU << (2 * 4)) | (0xFU << (3 * 4)) | (0xFU << (4 * 4)));
+  V |=  ((UINT32)PIO_SPI0_FUNC << (1 * 4))
+      | ((UINT32)PIO_SPI0_FUNC << (2 * 4))
       | ((UINT32)PIO_SPI0_FUNC << (3 * 4))
       | ((UINT32)PIO_SPI0_FUNC << (4 * 4));
   MmioWrite32 (SUNXI_PIO_BASE + PIO_PC_CFG0_REG, V);
 
-  DEBUG ((DEBUG_ERROR, "SunxiSpi: PIO PC_CFG0 now 0x%08x (PC2/3/4 -> spi0 func5)\n",
+  DEBUG ((DEBUG_ERROR, "SunxiSpi: PIO PC_CFG0 now 0x%08x (PC1=CLK/2=MOSI/3=CS0/4=MISO func5)\n",
           MmioRead32 (SUNXI_PIO_BASE + PIO_PC_CFG0_REG)));
 }
 
@@ -402,20 +413,29 @@ SpiXfer (
 
   SpiResetFifo ();
 
-  // Chip-select setup: SW owns SS, CS0, mode 0, SPOL=1, DHB on (half-duplex).
-  // Assert SS LOW for the whole exchange and hold it across both bursts.
+  // Chip-select setup: SW owns SS, CS0, mode 0, SPOL=1, DHB on. Assert SS LOW
+  // and hold it low for the WHOLE single-XCH exchange (cmd + read in one frame).
   V  = SpiRd (SPI_TC_REG);
   V |= SPI_TC_SS_OWNER;
   V &= ~SPI_TC_SS_SEL_MASK;            // CS0
   V &= ~(SPI_TC_CPOL | SPI_TC_CPHA);   // mode 0
   V |=  SPI_TC_SPOL;                   // SS active low
-  V |=  SPI_TC_DHB;                    // discard half-duplex burst (BSP default)
+  V |=  SPI_TC_DHB;                    // discard the TxLen echo bytes in RX FIFO
+  V &= ~SPI_TC_SSCTL;                  // CS stays asserted BETWEEN the 2 bursts
   V &= ~SPI_TC_SS_LEVEL;               // SS low = asserted
   SpiWr (SPI_TC_REG, V);
 
-  // ---- Phase 1: transmit the command (TxLen bytes driven on MOSI) ----
+  // ---- TWO transfers, ONE CS frame (matches the VENDOR DRIVER exactly) ----
+  // spi-sunxi.c sunxi_spi_mode_check(): a half-duplex command+read is TWO
+  // spi_transfers, each its own set_bc_tc_stc + start_xfer (XCH), with CS held
+  // low across both by the framework. Replicated here:
+  //   TX (cmd): set_bc_tc_stc(tx, 0, tx, 0)  -> MBC=tx MTC=tx STC=tx
+  //   RX (data): set_bc_tc_stc(0, rx, 0, 0)  -> MBC=rx MTC=0  STC=0  (pure rx)
+  // CS is already asserted (SS_LEVEL low) above and stays low until Done.
+
+  // --- Transfer 1: drive the command bytes ---
   if (TxLen > 0) {
-    SpiSetBurst (TxLen, 0, TxLen, 0);
+    SpiSetBurst (TxLen, 0, TxLen, 0);          // MBC=tx MTC=tx STC=tx
     for (i = 0; i < TxLen; i++) {
       MmioWrite8 (mSpiBase + SPI_TXDATA_REG, Tx[i]);
     }
@@ -425,14 +445,13 @@ SpiXfer (
     }
   }
 
-  // ---- Phase 2: read the response (MTC=0 -> pure receive) ----
+  // --- Transfer 2: pure receive (MTC=0 => MOSI idle, clock RxLen bytes in) ---
   if (RxLen > 0) {
-    SpiSetBurst (0, RxLen, 0, 0);
+    SpiSetBurst (0, RxLen, 0, 0);              // MBC=rx MTC=0 STC=0
     Status = SpiRunBurst ("RX");
     if (EFI_ERROR (Status)) {
       goto Done;
     }
-
     for (i = 0; i < RxLen; i++) {
       UINTN  Guard;
       for (Guard = 0; Guard < 1000000; Guard++) {
@@ -441,7 +460,11 @@ SpiXfer (
           break;
         }
       }
-      Rx[i] = MmioRead8 (mSpiBase + SPI_RXDATA_REG);
+      if (Rx != NULL) {
+        Rx[i] = MmioRead8 (mSpiBase + SPI_RXDATA_REG);
+      } else {
+        (VOID)MmioRead8 (mSpiBase + SPI_RXDATA_REG);
+      }
     }
   }
 
@@ -453,6 +476,53 @@ Done:
   V |= SPI_TC_SS_LEVEL;
   SpiWr (SPI_TC_REG, V);
   return Status;
+}
+
+/**
+  Send a single command byte (no data phase). Used for state-reset opcodes.
+**/
+STATIC
+VOID
+NorCmd1 (
+  IN UINT8  Cmd
+  )
+{
+  UINT8  C[1];
+
+  C[0] = Cmd;
+  SpiXfer (C, 1, NULL, 0);
+}
+
+/**
+  Coax the flash out of whatever non-default state U-Boot may have left it in
+  before the first READ_ID. All of these are safe, standard, read-only-effect
+  recovery opcodes:
+    - 0xFF  exit QPI / clear continuous-read "mode bits" (if the chip was left
+            in a fast-read-continuous state it ignores normal commands).
+    - 0xAB  release from deep power-down (if U-Boot put it to sleep, it won't
+            answer READ_ID until released).
+    - 0x66 + 0x99  software reset-enable + reset (return registers/mode to POR).
+  Each opcode is a single-byte, CS-framed transfer with a brief settle between.
+**/
+STATIC
+VOID
+NorRecover (
+  VOID
+  )
+{
+  UINTN  d;
+
+  NorCmd1 (NOR_CMD_EXIT_QPI);
+  for (d = 0; d < 10000; d++) { MmioRead32 (mSpiBase + SPI_VER_REG); }
+
+  NorCmd1 (NOR_CMD_RELEASE_DPD);
+  for (d = 0; d < 50000; d++) { MmioRead32 (mSpiBase + SPI_VER_REG); }  // tRES > 3us
+
+  NorCmd1 (NOR_CMD_RSTEN);
+  NorCmd1 (NOR_CMD_RST);
+  for (d = 0; d < 200000; d++) { MmioRead32 (mSpiBase + SPI_VER_REG); } // tRST > 30us
+
+  DEBUG ((DEBUG_ERROR, "SunxiSpi: flash recovery (FF/AB/66+99) issued\n"));
 }
 
 /**
@@ -502,15 +572,37 @@ SunxiSpiDxeEntry (
   // enable bus -> set master -> config TC (mode0) inside SpiMasterEnable().
   SpiMasterEnable ();
 
-  Status = NorReadId (Id);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "SunxiSpi: READ_ID xfer failed: %r\n", Status));
-    return Status;
+  // Wake/reset the flash out of any state U-Boot left it in (DPD, QPI,
+  // continuous-read) before the first READ_ID.
+  NorRecover ();
+
+  // Diagnostic: read the status register (0x05). If READ_ID returns 0x00 but
+  // RDSR returns something that isn't 0x00/0xFF, MISO is fine and the issue is
+  // command-specific; if RDSR is also 0x00/0xFF, the data path itself is mute.
+  {
+    UINT8  Sr = 0xA5;
+    UINT8  Rc = NOR_CMD_RDSR;
+    SpiXfer (&Rc, 1, &Sr, 1);
+    DEBUG ((DEBUG_ERROR, "SunxiSpi: RDSR(0x05) = 0x%02x\n", Sr));
   }
 
-  DEBUG ((DEBUG_ERROR,
-    "SunxiSpi: SPI-NOR JEDEC ID = %02x %02x %02x (mfr/type/cap)\n",
-    Id[0], Id[1], Id[2]));
+  // Try READ_ID a few times — a freshly-reset chip may need a beat.
+  {
+    UINTN  Try;
+    for (Try = 0; Try < 3; Try++) {
+      Status = NorReadId (Id);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "SunxiSpi: READ_ID xfer failed: %r\n", Status));
+        return Status;
+      }
+      DEBUG ((DEBUG_ERROR,
+        "SunxiSpi: [try %u] SPI-NOR JEDEC ID = %02x %02x %02x\n",
+        (UINT32)Try, Id[0], Id[1], Id[2]));
+      if ((Id[0] != 0x00) && (Id[0] != 0xFF)) {
+        break;
+      }
+    }
+  }
 
   if ((Id[0] == 0x00) || (Id[0] == 0xFF)) {
     DEBUG ((DEBUG_ERROR,

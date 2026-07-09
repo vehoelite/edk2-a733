@@ -1,0 +1,66 @@
+diff --git a/MdeModulePkg/Bus/Pci/EhciDxe/EhciReg.c b/MdeModulePkg/Bus/Pci/EhciDxe/EhciReg.c
+index 912048e..7d91c7b 100644
+--- a/MdeModulePkg/Bus/Pci/EhciDxe/EhciReg.c
++++ b/MdeModulePkg/Bus/Pci/EhciDxe/EhciReg.c
+@@ -622,10 +622,22 @@ EhcInitHC (
+   //
+   EhcSetOpRegBit (Ehc, EHC_CONFIG_FLAG_OFFSET, CONFIGFLAG_ROUTE_EHC);
+ 
++  DEBUG ((DEBUG_ERROR,
++    "EhcInitHC: pre-PSE  USBCMD=0x%08x USBSTS=0x%08x PERLISTBASE=0x%08x ASYNCBASE=0x%08x CFGFLAG=0x%08x PORTSC=0x%08x\n",
++    EhcReadOpReg (Ehc, EHC_USBCMD_OFFSET),
++    EhcReadOpReg (Ehc, EHC_USBSTS_OFFSET),
++    EhcReadOpReg (Ehc, EHC_FRAME_BASE_OFFSET),
++    EhcReadOpReg (Ehc, EHC_ASYNC_HEAD_OFFSET),
++    EhcReadOpReg (Ehc, EHC_CONFIG_FLAG_OFFSET),
++    EhcReadOpReg (Ehc, EHC_PORT_STAT_OFFSET)));
++
+   Status = EhcEnablePeriodSchd (Ehc, EHC_GENERIC_TIMEOUT);
+ 
+   if (EFI_ERROR (Status)) {
+-    DEBUG ((DEBUG_ERROR, "EhcInitHC: failed to enable period schedule\n"));
++    DEBUG ((DEBUG_ERROR,
++      "EhcInitHC: failed to enable period schedule (USBCMD=0x%08x USBSTS=0x%08x)\n",
++      EhcReadOpReg (Ehc, EHC_USBCMD_OFFSET),
++      EhcReadOpReg (Ehc, EHC_USBSTS_OFFSET)));
+     return Status;
+   }
+ 
+diff --git a/MdeModulePkg/Bus/Pci/EhciDxe/EhciSched.c b/MdeModulePkg/Bus/Pci/EhciDxe/EhciSched.c
+index 59bbe9f..c22667c 100644
+--- a/MdeModulePkg/Bus/Pci/EhciDxe/EhciSched.c
++++ b/MdeModulePkg/Bus/Pci/EhciDxe/EhciSched.c
+@@ -155,6 +155,9 @@ EhcInitSched (
+   Ehc->PeriodFrame    = Buf;
+   Ehc->PeriodFrameMap = Map;
+ 
++  DEBUG ((DEBUG_ERROR, "EhcInitSched: PeriodFrame Buf=0x%lx PhyAddr=0x%lx Bytes=0x%lx\n",
++    (UINT64)(UINTN)Buf, (UINT64)PhyAddr, (UINT64)Bytes));
++
+   //
+   // Program the FRAMELISTBASE register with the low 32 bit addr
+   //
+@@ -214,6 +217,7 @@ EhcInitSched (
+   // the reclamation header
+   //
+   PciAddr = UsbHcGetPciAddressForHostMem (Ehc->MemPool, Ehc->ReclaimHead, sizeof (EHC_QH));
++  DEBUG ((DEBUG_ERROR, "EhcInitSched: ReclaimHead PciAddr=0x%lx\n", (UINT64)PciAddr));
+   EhcWriteOpReg (Ehc, EHC_ASYNC_HEAD_OFFSET, EHC_LOW_32BIT (PciAddr));
+   return EFI_SUCCESS;
+ 
+diff --git a/MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceIo.c b/MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceIo.c
+index 4daf517..1ea9cb6 100644
+--- a/MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceIo.c
++++ b/MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceIo.c
+@@ -899,7 +899,10 @@ CoherentPciIoAllocateBuffer (
+   //
+   Dev = NON_DISCOVERABLE_PCI_DEVICE_FROM_PCI_IO (This);
+   if ((Dev->Attributes & EFI_PCI_IO_ATTRIBUTE_DUAL_ADDRESS_CYCLE) == 0) {
+-    AllocAddress = MAX_UINT32;
++    // A733: cap at 2 GB to keep DMA buffers in low-DRAM. The default
++    // MAX_UINT32 cap returns 0xFFFFF000 which appears not reachable
++    // by the EHCI DMA engine even though it is valid DRAM.
++    AllocAddress = 0x80000000ULL - 1;
+     AllocType    = AllocateMaxAddress;
+   } else {
+     AllocType = AllocateAnyPages;
