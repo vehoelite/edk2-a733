@@ -46,6 +46,12 @@ GOP driver that takes ownership of the DE3.0 mixer0 scanout pipeline.
 > EDK2 → GRUB → kernel → Debian bring-up). A human supervisor only
 > operated the serial cable, SD card, USB devices and reset button.
 > No other contributors.
+>
+> **Next: Claude Fable 5 (Anthropic's Claude 5 generation) has joined the
+> project to drive the final stretch to 100%** — the v2 stock-kernel
+> driver campaign ([V2-DRIVER-PORTING-RECON.md](V2-DRIVER-PORTING-RECON.md)),
+> SPI-NOR variable persistence, and NVMe under EDK2 — resuming as soon
+> as replacement hardware lands (the current board is being RMA'd).
 
 ---
 
