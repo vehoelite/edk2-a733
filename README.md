@@ -242,25 +242,121 @@ BROM → BOOT0 → TF-A BL31 (v2.5) → BSP U-Boot 2018.07 → EDK2 BL33 @ 0x410
 
 ## Build & deploy
 
-```bash
-# one-shot build (run from inside the edk2 workspace this overlay sits in)
-cd ~/edk2
-bash build_edk2.sh
+### Setting up from a fresh clone
 
-# build + scp the uImage to the board's SD /boot and arm a one-shot EDK2 boot
-bash build_edk2.sh --deploy
+This repo is an **overlay**, not a standalone tree: it supplies
+`Platform/OrangePi` and `Silicon/Allwinner` and expects to live inside an
+EDK2 workspace. Seven things are required, and each one fails with an
+error that does not name the real cause — so follow all of them in order.
+The sequence below was verified end-to-end on a clean Ubuntu 22.04.
+
+**1. Host packages** (Ubuntu/Debian):
+
+```bash
+sudo apt update && sudo apt install -y \
+    build-essential uuid-dev gcc-aarch64-linux-gnu \
+    python3-dev python3-setuptools bison flex \
+    nasm acpica-tools u-boot-tools sshpass
 ```
 
-Output: `Build/OrangePi4Pro/DEBUG_GCC/FV/ORANGEPI4PRO_EFI_arm32.uimg`,
-a 4 MiB ARM Linux Kernel uImage with load/entry both at `0x41000000`.
-`--deploy` copies it to `/boot/ORANGEPI4PRO_EFI.uimg` on the SD card and
-sets a one-shot `/boot/try_edk2` flag (clearing the legacy `skip_edk2`
-hard-override). BSP U-Boot's `boot.scr` runs EDK2 only when `try_edk2` is
-present; **before** launching it the script stamps `skip_edk2` via
-`ext4write`, so a hung or menu-parked EDK2 always falls back to BSP Linux
-on the next power-cycle (no SD-card surgery needed). This `boot.scr`
-opt-in dance is development scaffolding — it goes away once EDK2 replaces
-the BL33 slot and/or boots Debian on its own.
+`u-boot-tools` provides `mkimage` (the build wraps the FD as a uImage);
+`sshpass` is only needed for `--deploy`.
+
+**2. EDK2, pinned.** This port is developed against `b03a21a63e`. Current
+`master` relocates library classes — notably `ArmMmuLib`, which this
+platform's `.dsc` expects under `UefiCpuPkg/` rather than `ArmPkg/` — so
+an unpinned clone fails to resolve. The bundled patches also apply cleanly
+only against this commit.
+
+```bash
+git clone --filter=blob:none https://github.com/tianocore/edk2.git ~/edk2
+cd ~/edk2 && git checkout b03a21a63e
+```
+
+**3. EDK2 submodules.** Meta-data parsing reads `.dec` include paths
+before any compilation, so a missing submodule fails early with
+`error 000E: File/directory not found in workspace` naming a package
+unrelated to what you are building:
+
+```bash
+cd ~/edk2 && git submodule update --init --recursive --depth 1
+```
+
+**4. Compile BaseTools.** `edksetup.sh BaseTools` only exports environment
+variables — it does **not** build the C tools. Skip this and every module
+fails with `error 7000: Failed to execute command`, because the
+`BinWrappers` shell scripts invoke binaries that do not exist:
+
+```bash
+cd ~/edk2 && make -C BaseTools -j$(nproc)
+```
+
+**5. Clone this overlay and link it into the workspace.** Symlinks keep
+your edits in this git repo while the build sees them in place:
+
+```bash
+git clone https://github.com/vehoelite/edk2-a733.git ~/edk2-a733
+mkdir -p ~/edk2/Platform ~/edk2/Silicon
+ln -sfn ~/edk2-a733/Platform/OrangePi  ~/edk2/Platform/OrangePi
+ln -sfn ~/edk2-a733/Silicon/Allwinner  ~/edk2/Silicon/Allwinner
+ln -sfn ~/edk2-a733/build_edk2.sh      ~/edk2/build_edk2.sh
+```
+
+**6. Apply the EDK2 patches — mandatory, not optional.** `patches/`
+contains changes to EDK2 itself that this port depends on:
+
+```bash
+cd ~/edk2
+for p in ~/edk2-a733/patches/*.patch; do git apply "$p"; done
+```
+
+- `0001-prepi-debug-instrumentation.patch` adds the raw-UART debug
+  prologue to `ArmVirtPkg/PrePi/ModuleEntryPoint.S`
+  (`mov x10, #0x0250; lsl x10, x10, #16`). **The post-build step in
+  `build_edk2.sh` locates `_ModuleEntryPoint` by searching the FD for
+  exactly those two instructions.** Without the patch the compile
+  succeeds, prints `- Done -`, and then dies with
+  `ERROR: _ModuleEntryPoint signature ... not found in FD!` — no uImage
+  is produced.
+- `0002-ehci-nondiscoverable-dma-workingtree.patch` carries the
+  NonDiscoverablePci DMA-offset fix that USB mass storage and the USB
+  keyboard depend on, plus EHCI diagnostics.
+
+**7. Build.**
+
+```bash
+cd ~/edk2
+bash build_edk2.sh            # build only
+bash build_edk2.sh --deploy   # build + scp to the board, arm one-shot EDK2 boot
+```
+
+A correct run ends with:
+
+```
+- Done -
+_ModuleEntryPoint FD offset : 0x49ed4
+Branch patched successfully.
+uImage built: Build/OrangePi4Pro/DEBUG_GCC/FV/ORANGEPI4PRO_EFI_arm32.uimg
+```
+
+> **Check the artifact, not the exit code.** `build_edk2.sh` sources
+> `edksetup.sh`, which defeats `set -e` — the script returns **0 even when
+> the build fails**. Always confirm
+> `Build/OrangePi4Pro/DEBUG_GCC/FV/ORANGEPI4PRO_EFI_arm32.uimg` exists.
+
+### Deploying
+
+Output is a 4 MiB ARM Linux Kernel uImage with load/entry both at
+`0x41000000`. `--deploy` copies it to `/boot/ORANGEPI4PRO_EFI.uimg` on the
+SD card and sets a one-shot `/boot/try_edk2` flag (clearing the legacy
+`skip_edk2` hard-override). BSP U-Boot's `boot.scr` runs EDK2 only when
+`try_edk2` is present; **before** launching it the script stamps
+`skip_edk2` via `ext4write`, so a hung or menu-parked EDK2 always falls
+back to BSP Linux on the next power-cycle (no SD-card surgery needed).
+This `boot.scr` opt-in dance is development scaffolding — it goes away
+once EDK2 replaces the BL33 slot and/or boots Debian on its own.
+
+Edit `BOARD_IP` at the top of `build_edk2.sh` to match your board.
 
 ---
 
