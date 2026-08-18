@@ -1,0 +1,2 @@
+# Keeps the empty Include/ dir tracked: OrangePi4ProPkg.dec [Includes] declares it,
+# and EDK2 fails with error 000E if it is absent on a fresh clone.
