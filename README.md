@@ -3,7 +3,7 @@
 A working **EDK2 (TianoCore) UEFI port** targeting the **Allwinner A733**
 SoC as found on the **Orange Pi 4 Pro**. Boots all the way to a
 **graphical UEFI Boot Manager and Interactive Shell rendered natively on
-the panel**, with a serial fallback over UART0, **a working USB host
+the panel**, with a serial console on UART7, **a working USB host
 stack with hub + mass-storage + keyboard support**, and a from-scratch
 GOP driver that takes ownership of the DE3.0 mixer0 scanout pipeline.
 
@@ -215,7 +215,21 @@ BROM → BOOT0 → TF-A BL31 (v2.5) → BSP U-Boot 2018.07 → EDK2 BL33 @ 0x410
 
 - **SoC**: Allwinner A733 (`sun60iw2p1`) — 6× Cortex-A55 + 2× Cortex-A76, AArch64
 - **Memory**: 6 GB LPDDR5
-- **UART0**: NS16550, MMIO `0x02500000`, register stride 4, 115200 8N1
+- **UART7 (the debug console — use this one)**: NS16550, MMIO
+  `0x07080000`, register stride 4, 115200 8N1. TX/RX are **PL6/PL7**, on
+  **40-pin header pins 8 (TX) and 10 (RX), GND on pin 9**. Wire your
+  adapter's **RXD to pin 8**; leave VCC disconnected.
+  UART7 sits in the CPUS power domain and **nothing in the boot chain
+  enables it**, so `A733UartLib` ungates its clock and muxes its pins
+  itself (`R_CCU 0x0701018C |= BIT16|BIT0`, `R_PIO 0x07025000` nibbles
+  6,7 = 3). In mainline naming this block is **R_UART0**.
+- **UART0**: NS16550, MMIO `0x02500000`, register stride 4, 115200 8N1.
+  Reachable only on the 3-pin debug header, which has **never produced
+  output on this board** — don't start here. The PrePi asm prologue still
+  writes its single-character markers to UART0 (retargeting it would need
+  clock/mux setup in assembly and would invalidate the FD signature
+  `build_edk2.sh` searches for), so those markers are invisible; all
+  `DebugLib` output goes to UART7.
 - **GICv3**:
   - Distributor: `0x03400000`, size `0x10000`
   - Redistributor: `0x03460000`, size `0x4F0F00`
@@ -502,14 +516,49 @@ them against the BSP `sunxi-hci.c` source. Lessons:
 
 ### Console / debug
 
-13. **DEBUG noise** — at `PcdDebugPrintErrorLevel=0x804FFFFF` the
-    pool/load spam buries the Shell prompt. Lowered to `0x80000000`
-    (ERROR only). Note: this **also masks `DEBUG_INFO`**, so when
-    debugging your own driver, raise it back temporarily.
+13. **DEBUG noise / print level** — at
+    `PcdDebugPrintErrorLevel=0x804FFFFF` the pool/load spam buries the
+    Shell prompt. Now set to `0x80000006` =
+    `DEBUG_ERROR | DEBUG_WARN | DEBUG_LOAD`. **`DEBUG_LOAD` is `0x4`, not
+    `0x2`** — `0x2` is `DEBUG_WARN`, and setting it by mistake produces a
+    wave of warnings but none of the load addresses you wanted.
+    `DEBUG_LOAD` makes `DxeCore` print `Loading driver at 0x...` for every
+    image, which is the **only** way to map a backtrace PC back to a
+    module when the `DebugImageInfoTable` lookup comes up empty. Note the
+    level still masks `DEBUG_INFO`; raise it temporarily when debugging
+    your own driver.
 
 14. **Heredoc + `sshpass + sudo bash -s`** mangles bash escapes. Always
     write helper scripts to `/tmp`, scp them, then
     `ssh sudo bash /tmp/script.sh`. (See [`research/`](./research/).)
+
+15. **Prove the wire before you touch a boot file.** `PL6` is an
+    unclaimed GPIO until UART7 is enabled, so you can drive it directly
+    (`gpio mode 3 out`, then toggle) and watch your adapter: each low
+    pulse arrives as one `0x00` framing-error byte. 40 pulses in, 41 bytes
+    out means pad → header → wire → adapter all work. Only then is
+    patching a DTB a reasonable risk.
+
+16. **Enabling UART7 under Linux** (useful for capturing a reference
+    configuration) is one surgical edit — the `overlays=` line in
+    `/boot/orangepiEnv.txt` is a **no-op on this board**, and
+    `orangepi-config`'s Hardware menu only rewrites that same dead line:
+    ```bash
+    D=/boot/dtb/allwinner/sun60i-a733-orangepi-4-pro.dtb
+    sudo cp -n $D $D.bak && sudo fdtput -t s $D /soc@3000000/uart@7080000 status okay
+    ```
+    `uart7_pins@0` already carries real pins (`"PL6\0PL7"`, function
+    `s_uart0`); only `status` was wrong. Contrast `uart0_pins@0`, whose
+    `pins` property is **empty**, which is why Linux muxes nothing for
+    UART0 and silently inherits whatever U-Boot left.
+
+17. **`BootDebian` opens `\Image`, `oard.dtb`, `\initrd`** on the ESP
+    — exact names. Kernels staged as `Image.debian` / `initrd.debian`
+    will **not** be found, and BDS then falls through to the SD card boot
+    option and runs the distro's `bootaa64.efi` (shim) instead. Its
+    "looking for `\Image` on a USB volume" message is misleading:
+    `FindBootVolume()` does not filter by USB, it takes whichever volume
+    has `\Image`.
 
 ---
 
@@ -630,9 +679,14 @@ grafted at `b03a21a`; this repo only contains the platform overlay.
 - [x] **DTB hand-off to a Linux kernel** — done in v0.3 via GRUB's
       `devicetree` + `linux` on a USB stick (EDK2 → GRUB → EFI-stub
       kernel → Debian)
-- [ ] **Native EDK2 DTB→kernel hand-off** — install the FDT config table
-      + `LoadImage`/`StartImage` the kernel from EDK2 directly, retiring
-      GRUB *and* the U-Boot `boot.scr` opt-in flag (the real finish line)
+- [x] **Native EDK2 DTB→kernel hand-off** — verified end to end:
+      EDK2 → `BootDebian` (FDT config table + initrd via `LoadFile2` +
+      `LoadImage`/`StartImage`) → arm64 EFI stub → kernel
+      `5.15.147-sun60iw2` → initramfs → systemd → autologin shell on the
+      UART7 console. Genuinely UEFI-booted (`/sys/firmware/efi` present,
+      `fw_platform_size=64`). **GRUB is retired from this path.**
+- [ ] **Retire the U-Boot `boot.scr` opt-in flag** — the remaining half of
+      the finish line; EDK2 is still chainloaded by U-Boot via `try_edk2`
 - [ ] **Display hand-off** — GOP → `efifb`/`simplefb` so the panel shows
       the kernel console instead of disabling the DE/DRM in the DTB
 - [ ] **Re-enable `SunxiPcieDxe` / DesignWare PCIe + NVMe** — find the
