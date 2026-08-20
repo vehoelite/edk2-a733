@@ -116,3 +116,72 @@ So for PCIe the BSP is the only real source; mainline has nothing to copy yet.
 5. Keep the scoped DMA offset work from PR #1 in mind: inbound iATU must cover all DRAM
    if `EFI_PCI_IO_ATTRIBUTE_DUAL_ADDRESS_CYCLE` is enabled, otherwise buffers above the
    window are unreachable by the device.
+
+## Measured register recipe (CCU), 2026-08-20
+
+Obtained empirically on a running board rather than read off a datasheet: snapshot the
+CCU with the vendor `sunxi-pcie` driver bound (PCIe up, RC enumerated as `00:00.0`),
+`unbind` it, snapshot again, diff. Reproduced identically on a second run. Same technique
+that identified the UART7 gate bit.
+
+CCU base is `0x02002000` (`/soc@3000000/ccu@2002000`, size `0x2000`).
+R_CCU is `0x07010000` (size `0x340`) and **showed no changes at all**.
+
+| register | PCIe UP | PCIe DOWN | vendor name |
+|----------|---------|-----------|-------------|
+| `CCU+0x0574` | `0x00010002` | `0x00000000` | `RST_BUS_ITS_PCIE0` = BIT(16), ITS-PCIe0 gate = BIT(1) |
+| `CCU+0x1380` | `0x80000000` | `0x00000000` | `pcie0_aux` clock, BIT(31) = enable |
+| `CCU+0x1384` | `0x82000000` | `0x02000000` | `pcie0_axi_slv` clock, BIT(31) = enable (`0x02000000` is the retained source/divider field) |
+| `CCU+0x138C` | `0x00030000` | `0x00000000` | `RST_BUS_PCIE0` = BIT(17), `RST_BUS_PCIE0_PWRUP` = BIT(16) |
+| `CCU+0x1B28` | `0x00020000` | `0x00010000` | **unattributed** — see caveat |
+
+The first four are confirmed independently in
+`bsp/drivers/clk/sunxi-ng/ccu-sun60iw2.c`:
+
+```c
+0x0574, BIT(1), 0);                              /* ITS-PCIe0 gate      */
+[RST_BUS_ITS_PCIE0]   = { 0x0574, BIT(16) },
+pcie0_aux_parents,     0x1380,
+pcie0_axi_slv_parents, 0x1384,
+[RST_BUS_PCIE0]       = { 0x138c, BIT(17) },
+[RST_BUS_PCIE0_PWRUP] = { 0x138c, BIT(16) },
+```
+
+so the measured bits and the vendor tables agree exactly.
+
+**Caveat on `CCU+0x1B28`.** It changes deterministically (reproduced on a repeat run) but
+holds BIT(17) when up and BIT(16) when down — one bit set in *each* state, which is not
+how a clock gate behaves — and no BSP driver under `bsp/drivers/{pcie,power,irqchip}` or
+the CCU/PHY drivers references that offset. Best current reading is a **status register
+reflecting PCIe power/reset state**. Do not write it; treat it as a probe point.
+
+### Bring-up write sequence for EDK2
+
+Reverse of the teardown, following `sunxi_pcie_plat_clk_setup()` ordering:
+
+```c
+// 1. resets first: RST_BUS_PCIE0 | RST_BUS_PCIE0_PWRUP
+MmioOr32 (0x0200338C, BIT17 | BIT16);
+// 2. pcie0_aux clock enable
+MmioOr32 (0x02003380, BIT31);
+// 3. pcie0_axi_slv: preserve the source/divider field, set enable.
+//    Vendor sets this rate to 400 MHz (pcie_slv_clk_400m); the observed
+//    retained value 0x02000000 is what a working system holds.
+MmioOr32 (0x02003384, BIT31);
+// 4. ITS-PCIe0 reset deassert + gate
+MmioOr32 (0x02002574, BIT16 | BIT1);
+```
+
+Then regulators (`pcie3v3`, `pcie1v8`), the Cadence Combo PHY (`phy_init`), and only then
+DBI at `0x06000000`, `setup_rc`, `ltssm_enable`.
+
+**Caveat on ordering.** The vendor driver deasserts resets *before* enabling clocks, and
+sets `pclk_slv` to 400 MHz *before* enabling it. The snapshot cannot show ordering or
+intermediate rate programming — only the final state — so follow
+`sunxi_pcie_plat_clk_setup()` for sequence and use the table above for values.
+
+**Caveat on regulators and power domain.** R_CCU showed no change across bind/unbind, so
+this diff says nothing about the PCK600 power domain (`power-domains = <pck600 7>`) or
+the `pcie3v3`/`pcie1v8` regulators — those are presumably left enabled by boot and are
+not touched by driver bind/unbind. EDK2 may still need to enable them explicitly if
+U-Boot does not. That remains unverified.
