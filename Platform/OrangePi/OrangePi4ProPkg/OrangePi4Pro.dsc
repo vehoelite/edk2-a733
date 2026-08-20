@@ -155,13 +155,44 @@
 [LibraryClasses.common.DXE_RUNTIME_DRIVER]
   VariablePolicyLib|MdeModulePkg/Library/VariablePolicyLib/VariablePolicyLibRuntimeDxe.inf
 
+# FALLBACK (disabled): route DXE DEBUG() to the LCD instead of the UART.
+# Re-enable by uncommenting the block below ONLY if the serial link dies;
+# serial gives the full exception dump, the panel truncates it.
+#[LibraryClasses.common.DXE_DRIVER, LibraryClasses.common.UEFI_DRIVER, LibraryClasses.common.DXE_RUNTIME_DRIVER]
+  # Route DXE-phase DEBUG() output to ConOut -- i.e. the DE3.0 GOP console on
+  # the LCD panel -- instead of the UART.
+  #
+  # Rationale: the 3-pin debug UART on this board has never been reliable, and
+  # in EDK2 there is no SSH fallback, so a failed serial link means no debug
+  # output at all. GraphicsConsoleDxe + SunxiSimpleFbGopDxe already render the
+  # Boot Manager and Shell on the panel, so ConOut is a working channel; this
+  # makes the exception dump (PC/backtrace/ESR/FAR) photographable.
+  #
+  # Safe by construction: UefiDebugLibConOut guards its output with
+  #   if ((mDebugST != NULL) && (mDebugST->ConOut != NULL))
+  # so it is simply silent until GraphicsConsole binds, and it tracks
+  # ExitBootServices via mPostEBS for the runtime-driver case.
+  #
+  # NOTE: DXE_CORE is deliberately NOT overridden -- it prints before ConOut
+  # exists, so there is nothing to gain and it is the riskiest phase to touch.
+#  DebugLib|MdePkg/Library/UefiDebugLibConOut/UefiDebugLibConOut.inf
+
 ################################################################################
 [PcdsFixedAtBuild.common]
   #
-  # Serial / UART (NS16550, UART0 on Orange Pi 4 Pro)
-  # TODO: verify UART0 base and which UART is on the 40-pin debug header.
+  # Serial / UART (NS16550, UART7 on Orange Pi 4 Pro)
   #
-  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialRegisterBase|0x02500000
+  # UART7 (0x07080000), not UART0 (0x02500000). UART0's pins are reachable
+  # only on the 3-pin debug header, which has never produced output on this
+  # board. UART7's TX/RX are PL6/PL7, brought out on 40-pin header pins 8
+  # and 10 (GND on pin 9) -- a link verified byte-exact at 115200 under Linux.
+  #
+  # UART7 is in the CPUS power domain and nothing in the boot chain enables
+  # it, so A733UartLib ungates its clock and muxes its pins itself. The
+  # divisor is unchanged: uart0 and uart7 both run from the same 24MHz
+  # oscillator (both read DLL=0x0D at 115200).
+  #
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialRegisterBase|0x07080000
   gEfiMdeModulePkgTokenSpaceGuid.PcdSerialClockRate|24000000
   gEfiMdeModulePkgTokenSpaceGuid.PcdSerialBaudRate|115200
   gEfiMdeModulePkgTokenSpaceGuid.PcdSerialRegisterStride|4
@@ -210,7 +241,11 @@
   # Debug output level
   #
   gEfiMdePkgTokenSpaceGuid.PcdDebugPropertyMask|0x2F
-  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x80000000
+  # DEBUG_ERROR (0x80000000) | DEBUG_WARN (0x00000002) | DEBUG_LOAD (0x00000004).
+  # DEBUG_LOAD makes DxeCore print "Loading driver at 0x..." for every image,
+  # which is the only way to map a raw backtrace PC back to a module when the
+  # DebugImageInfoTable lookup comes up empty.
+  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x80000006
 
   #
   # BDS boot timeout (seconds). 0 = boot immediately, 0xFFFF = wait forever.

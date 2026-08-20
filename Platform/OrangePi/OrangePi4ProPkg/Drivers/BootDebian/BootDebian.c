@@ -43,9 +43,13 @@
 // mounts it after the stub hands off. panic=10 keeps a faulting boot self-
 // recovering (reboot -> boot.scr skip_edk2 -> BSP) while we shake out drivers.
 //
+// uart7 (0x07080000), not uart0: uart0's pins are only on the 3-pin debug
+// header, which produces no output on this board. uart7 is PL6/PL7 on 40-pin
+// header pins 8/10. earlycon works from the raw MMIO address regardless of DT;
+// console=ttyS7 additionally needs uart@7080000 enabled in board.dtb.
 STATIC CHAR16  mCmdline[] =
   L"root=UUID=51bbd498-46f8-4cc2-8d08-d0f181a24362 rootwait rootfstype=ext4 "
-  L"console=ttyS0,115200 earlycon=sunxi-uart,0x02500000 loglevel=7 panic=10";
+  L"console=ttyS7,115200 earlycon=sunxi-uart,0x07080000 loglevel=7 panic=10";
 
 // EFI_DTB_TABLE_GUID — the arm64 EFI stub reads the DTB from this config table.
 STATIC EFI_GUID  mFdtTableGuid =

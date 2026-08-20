@@ -53,16 +53,63 @@ UartWrite32 (UINTN Offset, UINT32 Value)
   MmioWrite32 (UART_BASE + Offset, Value);
 }
 
+//
+// CPUS-domain register block, needed only when the console is UART7.
+//
+// UART0 sits in the main SoC domain and is already clocked and pin-muxed by
+// TF-A/SPL before EDK2 runs. UART7 gets no such treatment -- nothing in the
+// boot chain touches it -- so its clock must be ungated and its pins muxed
+// here, before the first UART register write.
+//
+// These values were read back from a running Linux kernel that had UART7
+// working, not derived from a datasheet:
+//   R_CCU 0x0701018C : bit0 = UART7 clock gate, bit16 = reset deassert.
+//                      Observed 0x00010000 gated -> 0x00010001 ungated.
+//   R_PIO 0x07025000 : PL bank CFG0. Nibbles 6 and 7 select the PL6/PL7
+//                      function; both read 3 (s_uart0) on a working system.
+//
+#define A733_UART7_BASE      0x07080000
+#define A733_R_CCU_UART7     0x0701018C
+#define A733_R_PIO_PL_CFG0   0x07025000
+#define A733_PL67_MUX_MASK   0xFF000000
+#define A733_PL67_MUX_UART   0x33000000
+
+/**
+  Ungate and pin-mux UART7. No-op for any other UART base, so the main-domain
+  UART0 configuration is unaffected. UART_BASE is a FixedPcd, so the test below
+  folds away at compile time.
+**/
+STATIC VOID
+CpusUartBringUp (VOID)
+{
+  if (UART_BASE != A733_UART7_BASE) {
+    return;
+  }
+
+  // Deassert reset and ungate the clock.
+  MmioOr32 (A733_R_CCU_UART7, BIT16 | BIT0);
+
+  // Mux PL6 (TX) and PL7 (RX) to s_uart0, leaving the other PL pins untouched.
+  MmioAndThenOr32 (
+    A733_R_PIO_PL_CFG0,
+    (UINT32)~A733_PL67_MUX_MASK,
+    A733_PL67_MUX_UART
+    );
+}
+
 /**
   Initialize the UART at 115200-8N1.
-  The clock gating for UART0 must already be enabled by TF-A / SPL before
-  EDK2 is entered; doing CCU writes here is unnecessary for most sunxi ports.
+  For UART0 the clock gating is already done by TF-A / SPL. For UART7 it is
+  not, so CpusUartBringUp() handles that case before any register access.
 **/
 RETURN_STATUS
 EFIAPI
 SerialPortInitialize (VOID)
 {
   UINT32 Divisor;
+
+  // UART7 needs its clock and pins set up first; no-op for UART0.
+  CpusUartBringUp ();
 
   // Disable interrupts
   UartWrite32 (UART_IER, 0x00);
