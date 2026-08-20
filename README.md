@@ -552,6 +552,17 @@ them against the BSP `sunxi-hci.c` source. Lessons:
     `pins` property is **empty**, which is why Linux muxes nothing for
     UART0 and silently inherits whatever U-Boot left.
 
+18. **A mainline kernel boots SILENT on this board.** The vendor DTB
+    declares the UARTs as `compatible = "allwinner,uart-v100"`, a
+    vendor-only binding with no mainline driver — so `console=ttyS7`
+    binds to nothing and all output falls back to the EFI framebuffer
+    (you get Tux and the panic on the panel, nothing on the wire). Use
+    the DT-independent generic 8250 earlycon instead:
+    `earlycon=uart8250,mmio32,0x07080000 keep_bootcon`. `BootDebian`'s
+    cmdline now carries both that and `console=ttyS7,115200`, so vendor
+    and mainline kernels are each covered. Note `earlycon=sunxi-uart,...`
+    is a vendor-only name that even the vendor kernel rejects as unknown.
+
 17. **`BootDebian` opens `\Image`, `oard.dtb`, `\initrd`** on the ESP
     — exact names. Kernels staged as `Image.debian` / `initrd.debian`
     will **not** be found, and BDS then falls through to the SD card boot
@@ -687,8 +698,14 @@ grafted at `b03a21a`; this repo only contains the platform overlay.
       `fw_platform_size=64`). **GRUB is retired from this path.**
 - [ ] **Retire the U-Boot `boot.scr` opt-in flag** — the remaining half of
       the finish line; EDK2 is still chainloaded by U-Boot via `try_edk2`
-- [ ] **Display hand-off** — GOP → `efifb`/`simplefb` so the panel shows
-      the kernel console instead of disabling the DE/DRM in the DTB
+- [x] **Display hand-off** — confirmed working. A stock mainline kernel
+      (Ubuntu 26.04, 7.0.0-14-generic) picks up the GOP framebuffer as
+      `efifb` unaided and renders the Tux logo and its panic on the panel
+      with no DTB changes. Never observed before simply because nothing
+      had booted far enough to draw on it.
+- [ ] **Retire the vendor-DTB DE/DRM workaround** — the *vendor* kernel
+      path still disables the DE/DRM in the DTB rather than inheriting the
+      GOP framebuffer; only the mainline path is confirmed clean
 - [ ] **Re-enable `SunxiPcieDxe` / DesignWare PCIe + NVMe** — find the
       DBI unlock @`0x06000000`; BSP Linux enumerates the NVMe, so the
       init sequence is replicable rather than blind
