@@ -211,8 +211,8 @@ carried over from a similar SoC.
 | `resets` | `<ccu 89> <ccu 90> <ccu 0>` | `pclk_rst`, `pwrup_rst`, `its` |
 | `power-domains` | `<pck600 7>` | `/pck-600@7060000/power-controller` |
 | `phys` | `<0x14c>` | `serdes@6c00000/combo-phy1@6c02000/combo1-pcie-phy` |
-| `pcie3v3-supply` | `<0x4c>` | `bldo1` on the PMU at `twi@7083000/pmu@36` |
-| `pcie1v8-supply` | `<0x5f>` | `dcdc1`, same PMU |
+| `pcie1v8-supply` | `<0x4c>` | `bldo1` on the PMU at `twi@7083000/pmu@36` |
+| `pcie3v3-supply` | `<0x5f>` | `dcdc1`, same PMU |
 | `power-gpios` | `<r-pinctrl 0 3 0>` | **PL3**, active high |
 | `reset-gpios` | `<pinctrl 3 22 0>` | **PD22** = PERST#, active high |
 | `wake-gpios` | `<pinctrl 3 21 0>` | **PD21** |
@@ -463,10 +463,12 @@ other way round.
 
 Everything below is register-level settled except step 1.
 
-1. regulators: `bldo1` to 3.3V and `dcdc1` to 1.8V, both on the AXP PMU behind
-   I2C `twi@7083000`. **Open question** -- if they come up on their own we can
-   skip an I2C driver entirely, and that is the one thing still worth checking
-   on the board.
+1. regulators, on the **axp8191** PMU behind I2C `twi@7083000` addr 0x36:
+   `dcdc1` is pcie3v3 (3.3V slot) and `bldo1` is pcie1v8 (1.8V PHY).
+   `dcdc1` carries `regulator-always-on` and `regulator-boot-on`, so the slot
+   rail is up before EDK2 runs and costs us nothing. `bldo1` carries neither,
+   so the 1.8V PHY rail is the **one genuinely open item** -- if it is off at
+   EDK2 time we need enough of an I2C/axp8191 driver to switch it on.
 2. drive **PL3** high (power)
 3. CCU clocks and resets, per the measured and now source-confirmed recipe
 4. serdes and PHY, per the sequence above
@@ -503,3 +505,62 @@ app+0x220  PCIE_ARMISC_CTRL     app+0xE0C  PCIE_LINK_STAT
 ```
 
 where `app = 0x06400000`.
+
+
+## Regulator facts, and a second hazard (2026-08-21)
+
+The two supplies were transposed in the first version of the table above. The
+live board settles it, because the voltages are unambiguous:
+
+```
+axp8191-bldo1   microvolts=1800000   num_users=2     <- pcie1v8-supply, phandle 0x4c
+axp8191-dcdc1   microvolts=3300000   num_users=4     <- pcie3v3-supply, phandle 0x5f
+```
+
+So `bldo1` is the 1.8V PHY rail and `dcdc1` is the 3.3V slot rail.
+
+What that means for the port:
+
+| rail | supply | DT flags | EDK2 |
+| --- | --- | --- | --- |
+| pcie3v3, slot | `dcdc1` | `regulator-always-on`, `regulator-boot-on` | already on, free |
+| pcie1v8, PHY | `bldo1` | neither | **unknown, must be determined** |
+
+The PMU is an **axp8191** at i2c bus 13 address 0x36
+(`/sys/devices/platform/soc@3000000/7083000.twi/i2c-13/13-0036`). There is also
+an `axp515` at 0x34 on the same bus.
+
+### Hazard: do not unbind sunxi-pcie while an NVMe is fitted
+
+Writing `6000000.pcie` to the driver `unbind` file hangs the board hard when a
+drive is present -- no ping, power cycle required. With an empty slot the same
+unbind was safe, which is how `research/pcie_ccu_diff.py` came to be written.
+
+**`pcie_ccu_diff.py` is therefore unsafe to run now.** Do not use it to compare
+link-up against link-down with a drive installed. The clock and reset values it
+was written to measure are already recorded above and confirmed against the
+U-Boot source, so there is no remaining reason to run it.
+
+This also retires an earlier plan item that said to re-run the diff once an
+NVMe was fitted, on the theory that a trained link would expose PHY and LTSSM
+registers invisible with an empty slot. That idea is void: the unbind half of
+the diff is exactly what hangs.
+
+### How to settle the bldo1 question safely
+
+The obvious test -- unbind the PCIe driver and watch whether `bldo1` drops --
+is precisely the thing that hangs the board, so do not use it.
+
+Safer options, in order of preference:
+
+1. Read the axp8191 enable bit for bldo1 over i2c from Linux (`i2cget` on bus
+   13, address 0x36) and compare against the datasheet default. This says what
+   the rail is doing but not what it does at reset.
+2. Have the EDK2 driver itself read it. Once `SunxiPcieDxe` exists it runs
+   before Linux, so a single UART line printing the axp8191 register answers
+   the question directly and in the state that actually matters.
+3. Simply program it unconditionally. Enabling an already-enabled regulator is
+   harmless, so if the I2C write is cheap, doing it removes the question
+   entirely rather than answering it.
+
+Option 3 is likely the right engineering answer, with option 2 as the check.
