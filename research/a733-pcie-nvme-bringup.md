@@ -292,3 +292,112 @@ the asymmetry with R_PIO is genuinely odd and I have no explanation for it.
 Do not read the DBI or PHY regions after unbinding the PCIe driver. The unbind
 gates the clocks, and a read with the clocks gated is a bus hang, not a zero.
 Snapshots of those regions have to be taken in the link-up state only.
+
+## The U-Boot A733 PCIe driver is the shortcut (2026-08-21)
+
+The vendor U-Boot on this board has PCIe compiled out, so **U-Boot does not
+train the link and EDK2 inherits nothing**. From
+`/usr/lib/u-boot/sun60iw2p1_t736_defconfig` on the board:
+
+```
+# CONFIG_PCI is not set
+# CONFIG_AW_CADENCE_COMBOPHY is not set
+CONFIG_PCIE_PERST_GPIO=""
+CONFIG_PCIE_WAKE_GPIO=""
+CONFIG_PCIE_POWER_GPIO=""
+```
+
+That kills the cheapest hypothesis, which was that we could just enumerate a
+link U-Boot had already brought up.
+
+It does however prove those symbols exist in Allwinner U-Boot, and a public
+tree carries them for our exact SoC: `JasonYANG170/ZeroA733-Uboot` has
+`src/configs/sun60iw2p1_a733_defconfig` with `CONFIG_PCI=y`, `CONFIG_NVME=y`,
+`CONFIG_PCIE_ALLWINNER_RC=y`, `CONFIG_AW_CADENCE_COMBOPHY=y`. Same SoC,
+different board, so the *sequence* is ours to reuse and the *pins* are not
+(theirs are PE11/PE12/PE13, ours are PL3/PD21/PD22 as measured above).
+
+The four relevant files, ~3000 lines total, versus 155KB for the Linux BSP
+driver:
+
+| file | lines | role |
+| --- | --- | --- |
+| `drivers/pci/pcie-sunxi-plat.c` | 430 | clocks, resets, regulators, LTSSM |
+| `drivers/pci/pcie_sunxi_rc.c` | 485 | RC core, iATU, enumeration |
+| `drivers/pci/pcie-sunxi.h` | 481 | register definitions |
+| `drivers/phy/allwinner/sunxi-cadence-combophy.c` | 1664 | the PHY |
+
+**Licensing.** U-Boot is GPL-2.0 and this tree is BSD-2-Clause-Patent. Those
+files are kept out of the repo deliberately. Use them as documentation of the
+hardware -- register offsets and ordering are facts about the silicon, not
+expression -- and write our own implementation from the facts.
+
+### The measured CCU recipe is confirmed by the U-Boot source
+
+`sunxi_pcie_plat_clk_setup()` does exactly what the bind/unbind diff measured,
+in the same order:
+
+| U-Boot step | measured register |
+| --- | --- |
+| `pcie_bgr_reg \|= RST \| PWRUP_RST` | `CCU+0x138C \|= BIT17\|BIT16` |
+| `pcie_aux_clk_reg \|= GATING` | `CCU+0x1380 \|= BIT31` |
+| `pcie_axi_slv_clk_reg \|= (2<<24)`, then GATING | `CCU+0x1384` |
+| `its_bgr_reg \|= ITS_RST \| ITS_GATING` | `CCU+0x0574 \|= BIT16\|BIT1` |
+
+One correction to the earlier notes: the `0x02000000` seen at `CCU+0x1384` was
+recorded as "retained src/div". It is not retained, it is written explicitly --
+`(2 << 24)` is the 400MHz clock source select, guarded by `pcie_slv_clk_400m`.
+
+Init order overall is **regulators -> resets and clocks -> Cadence PHY**, and
+only then DBI. U-Boot never touches the pck600 power domain, which suggests
+domain 7 is on out of reset and is one less thing for us to bring up.
+
+### Register facts confirmed against our silicon
+
+`app_base = dbi_base + PCIE_USER_DEFINED_REGISTER` where that offset is
+`0x400000`, so the app block is at **`0x06400000`**, inside the DBI window.
+This is why the DT declares only one reg range. Verified by reading the live
+board with the link up:
+
+```
+app+0xC00 LTSSM_CTRL = 0x00000041   = PCIE_LINK_TRAINING(BIT0) | DEVICE_TYPE_RC(BIT6)
+app+0xE0C LINK_STAT  = 0x00000013   = SMLH_LINK_UP | RDLH_LINK_UP
+app+0x800 PHY_CFG    = 0x00a023f0   (value with a trained Gen3 x1 link)
+```
+
+Both reads decode exactly as the header predicts, which confirms the offset on
+A733 rather than on a cousin SoC.
+
+Address windows also cross-check against our DT `ranges` and `/proc/iomem`:
+
+| window | U-Boot | ours |
+| --- | --- | --- |
+| cfg | `0x20000000` size `0x01000000` | `ranges` entry 1 |
+| io | `0x21000000` size `0x01000000` | `ranges` entry 2 |
+| mem | `0x22000000` size `0x07000000` | `/proc/iomem` `22000000-27ffffff` |
+
+The iATU is the unrolled DesignWare form at `dbi + 0x300000 + n*0x200`, which
+is what makes the DBI window `0x480000` long.
+
+### Open question: the core DBI reads all-ones under Linux
+
+Scanning the whole `0x480000` DBI window on the running board, only
+`0x380000..0x47ffff` reads as anything other than `0xffffffff`. Config space at
+`+0x000` and the iATU at `+0x300000` both read all-ones, while the app block at
+`+0x400000` reads real values.
+
+`0xffffffff` is the normal PCIe unsupported-request fill, and
+`PCIE_ADDR_PAGE_CFG` (app+0x04) reads 0, so the lower part of the window may be
+a paged view rather than flat DBI. U-Boot's driver assumes flat access from a
+cold start and never programs a page register, so this is most likely an
+artifact of the state the Linux driver leaves behind rather than something we
+must replicate.
+
+Flagging it as unresolved rather than concluding it. If our EDK2 driver brings
+the block up and config reads still return all-ones, `ADDR_PAGE_CFG`,
+`AWMISC_CTRL` (app+0x200) and `ARMISC_CTRL` (app+0x220) are the first three
+registers to look at -- all three currently read 0.
+
+Also note the header defines `PCIE_CTRL_MGMT_BASE 0x900000`, which is past the
+end of our `0x480000` DBI window. That header covers several SoCs, so not every
+constant in it applies to A733. Check each against the window size before use.
