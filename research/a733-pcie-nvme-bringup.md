@@ -268,10 +268,18 @@ R_PIO (`0x07025000`): bank PL is at offset `0x00`. Our working UART7 console
 proves this. The code muxes PL6/PL7 by writing `0x07025000`, and reading it
 back shows `cfg0 = 0x33ff1f22`, i.e. PL6 and PL7 both at mux 3 (UART7).
 
-Main PIO (`0x02000000`): bank N is at **`0x80 + N*0x80`**, so PD is at
-`0x02000200`. Offset `0x00` holds something that is not a pin bank. This was
-derived by fingerprinting every block against the pins the kernel names, and
-all six agree:
+Main PIO (`0x02000000`): offset `0x00` is a **table of bank offsets**, not a
+pin bank. It reads `000, 100, 180, 200, 280, 300, 380, 400, 480, 500, 580` for
+PA through PK, so **PD is at `0x02000200`**.
+
+The table is not a constant stride. PA sits at `0x000` and PB at `0x100`, and
+only from PB onward does it step by `0x80`. Any formula of the form
+`k + N*0x80` reproduces PB..PK correctly and gets **PA wrong**, so read the
+table rather than computing an offset. This also explains the apparent
+asymmetry with R_PIO: there is no shift, PA really is at offset 0 in both.
+
+The bank positions were fingerprinted independently against the pins the kernel
+names, and all six agree with the table:
 
 | pin, per kernel | predicted block | mux read | ok |
 | --- | --- | --- | --- |
@@ -283,9 +291,12 @@ all six agree:
 `0x02000200` is also the only block in the whole `0x1000` region with both data
 bit 21 and bit 22 set, which is what "PD21 and PD22 both driven high" requires.
 
-Treat the `0x80` shift as measured, not as documented. It is worth re-checking
-against the BSP pinctrl driver if that source ever becomes available, because
-the asymmetry with R_PIO is genuinely odd and I have no explanation for it.
+This layout was already established on 2026-08-20 while chasing the UART0
+pinmux defect, and the table at offset 0 is the documented form. An earlier
+draft of this section described it as `0x80 + N*0x80` with an unexplained
+offset-0 block. That formula happens to give the right answer for PB..PK, which
+is why it survived the fingerprint check, but it is wrong for PA. Use the
+table.
 
 ### Hazard
 
