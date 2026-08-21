@@ -185,3 +185,110 @@ this diff says nothing about the PCK600 power domain (`power-domains = <pck600 7
 the `pcie3v3`/`pcie1v8` regulators — those are presumably left enabled by boot and are
 not touched by driver bind/unbind. EDK2 may still need to enable them explicitly if
 U-Boot does not. That remains unverified.
+
+## Device-tree facts, read off the running board (2026-08-21)
+
+Taken from  on the vendor 5.15.147-sun60iw2 kernel with a
+WD_BLACK SN7100 fitted and the link up. Every phandle below was resolved by
+walking the tree, so these are the boards
+
+## Device-tree facts, read off the running board (2026-08-21)
+
+Taken from `/proc/device-tree` on the vendor 5.15.147-sun60iw2 kernel with a
+WD_BLACK SN7100 fitted and the link up. Every phandle below was resolved by
+walking the tree, so these are the board's real bindings rather than a guess
+carried over from a similar SoC.
+
+### `pcie@6000000` (`allwinner,sunxi-pcie-v300-rc`)
+
+| property | value | resolves to |
+| --- | --- | --- |
+| `reg` | `0x06000000` len `0x00480000` | DBI (the only reg; no separate ATU reg) |
+| `ranges` | windows at `0x20000000`, `0x21000000`, `0x22000000` | matches `pcie@6000000` at `22000000-27ffffff` in `/proc/iomem` |
+| `max-link-speed` / `num-lanes` | `3` / `1` | Gen3 x1 |
+| `num-ib-windows` / `num-ob-windows` | `16` / `16` | iATU window count |
+| `clocks` | `<ccu 227> <ccu 228> <ccu 50>` | `pclk_aux`, `pclk_slv`, `its` |
+| `resets` | `<ccu 89> <ccu 90> <ccu 0>` | `pclk_rst`, `pwrup_rst`, `its` |
+| `power-domains` | `<pck600 7>` | `/pck-600@7060000/power-controller` |
+| `phys` | `<0x14c>` | `serdes@6c00000/combo-phy1@6c02000/combo1-pcie-phy` |
+| `pcie3v3-supply` | `<0x4c>` | `bldo1` on the PMU at `twi@7083000/pmu@36` |
+| `pcie1v8-supply` | `<0x5f>` | `dcdc1`, same PMU |
+| `power-gpios` | `<r-pinctrl 0 3 0>` | **PL3**, active high |
+| `reset-gpios` | `<pinctrl 3 22 0>` | **PD22** = PERST#, active high |
+| `wake-gpios` | `<pinctrl 3 21 0>` | **PD21** |
+
+The three GPIOs and the two regulators are exactly the part a CCU bind/unbind
+diff can never show, because they are not in the CCU at all. They are also the
+part most likely to be left already configured by U-Boot, which is why the
+earlier diff looked complete when it was not.
+
+Confirmed against the kernel's own view, which agrees on all three pins:
+
+```
+gpiochip0 (2000000.pinctrl):  gpio-117 |wake ) out hi     <- PD21
+                              gpio-118 |reset) out hi     <- PD22, PERST# released
+gpiochip1 (7025000.pinctrl):  gpio-355 |power) out hi     <- PL3
+
+/sys/kernel/debug/pinctrl/2000000.pinctrl/pinmux-pins:
+    pin 117 (PD21): GPIO 2000000.pinctrl:117
+    pin 118 (PD22): GPIO 2000000.pinctrl:118
+```
+
+### The Cadence combo PHY
+
+`serdes@6c00000` is `allwinner,cadence-combophy`, with three reg ranges:
+
+| range | purpose |
+| --- | --- |
+| `0x06c00000` len `0x0400` | serdes common |
+| `0x06c06000` len `0x2000` | serdes common, second block |
+| `0x0709016c` len `0x0004` | a single register out in the PRCM area, almost certainly a serdes select/mux |
+
+clocks `<ccu 229>` (`serdes-clk`) plus two dcxo clocks from phandle `0x2b`;
+reset `<ccu 91>` (`serdes-reset`).
+
+It has two children. PCIe uses **combo-phy1**:
+
+| node | reg |
+| --- | --- |
+| `combo-phy0@6c01000` | `0x06c01000` len `0x0a00`, `0x06c80000` len `0x20000` |
+| `combo-phy1@6c02000` | `0x06c02000` len `0x0a00`, `0x06ca0000` len `0x20000` |
+| `aux-hpd@6c01e00` | `0x06c01e00` len `0x0200` |
+
+combo-phy1 is shared by `combo1-usb-phy` and `combo1-pcie-phy`, and combo-phy0
+by `combo0-usb-phy` and `combo0-dp-phy`. That sharing is why porting this one
+driver also unblocks USB3 and DisplayPort.
+
+### PIO bank layout, main pinctrl
+
+Driving PL3 and PD22 from EDK2 needs the register offsets, and the main
+pinctrl does **not** use the same base rule as R_PIO.
+
+R_PIO (`0x07025000`): bank PL is at offset `0x00`. Our working UART7 console
+proves this. The code muxes PL6/PL7 by writing `0x07025000`, and reading it
+back shows `cfg0 = 0x33ff1f22`, i.e. PL6 and PL7 both at mux 3 (UART7).
+
+Main PIO (`0x02000000`): bank N is at **`0x80 + N*0x80`**, so PD is at
+`0x02000200`. Offset `0x00` holds something that is not a pin bank. This was
+derived by fingerprinting every block against the pins the kernel names, and
+all six agree:
+
+| pin, per kernel | predicted block | mux read | ok |
+| --- | --- | --- | --- |
+| PB6, PB7 output | `0x100` | 1, 1 | yes |
+| PB8 output | `0x100` cfg1 | 1 | yes |
+| PD21, PD22 output | `0x200` | 1, 1 | yes |
+| PF6 input + IRQ | `0x300` | 0xE (EINT) | yes |
+
+`0x02000200` is also the only block in the whole `0x1000` region with both data
+bit 21 and bit 22 set, which is what "PD21 and PD22 both driven high" requires.
+
+Treat the `0x80` shift as measured, not as documented. It is worth re-checking
+against the BSP pinctrl driver if that source ever becomes available, because
+the asymmetry with R_PIO is genuinely odd and I have no explanation for it.
+
+### Hazard
+
+Do not read the DBI or PHY regions after unbinding the PCIe driver. The unbind
+gates the clocks, and a read with the clocks gated is a bus hang, not a zero.
+Snapshots of those regions have to be taken in the link-up state only.
