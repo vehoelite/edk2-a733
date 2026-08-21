@@ -401,3 +401,94 @@ registers to look at -- all three currently read 0.
 Also note the header defines `PCIE_CTRL_MGMT_BASE 0x900000`, which is past the
 end of our `0x480000` DBI window. That header covers several SoCs, so not every
 constant in it applies to A733. Check each against the window size before use.
+
+## The Cadence combo PHY PCIe sequence (2026-08-21)
+
+Most of the 1664 line U-Boot PHY driver is DisplayPort and USB3 register
+tables. The PCIe path is roughly 190 lines of flat MMIO, which makes it a
+realistic EDK2 port rather than a rewrite.
+
+`sunxi_cadence_phy_combo1_pcie_init()` in order:
+
+1. `clk_set_rate(serdes_clk, 100000000)` then enable it
+2. enable `dcxo_serdes1_clk` (the `DCXO_SERDES1_GATING BIT(5)` bit, which is
+   almost certainly the lone `0x0709016c` register in the serdes DT reg list)
+3. `subsys + 0x04 |= BIT16|BIT17|BIT18` -- `SUBSYS_PCIE_BGR`
+4. `subsys + 0xf0 |= BIT29` -- `SUBSYS_DISABLE_COMBO1_AUTOGATING`
+5. `combo + 0xc44 = 1` -- `SUBSYS_COMB1_PIPE_PCIE`, the mux that points
+   combo-phy1 at PCIe rather than USB3
+6. `sunxi_cadence_phy_pcie_phy_init()`, the register table
+
+The table itself is mostly 16-bit writes into the PHY array, with three
+read-modify-writes near the end, then:
+
+```
+top_reg + 0x000 |= BIT0
+top_reg + 0x100 |= BIT0
+poll top_reg + 0x900 until BIT0 is set     <- PMA ready, with 100us between reads
+phy_reg + 0x0a0  = 0x270
+phy_reg + 0x098 |= BIT4
+phy_reg + 0x18000 |= BIT0
+top_reg + 0x004 |= BIT28
+```
+
+### The register bases all match our DT
+
+This is worth stating because it is the independent check that this driver is
+for our silicon and not a cousin:
+
+| U-Boot field | offsets it uses | our DT range |
+| --- | --- | --- |
+| `top_subsys_reg` | `0x04`, `0xf0` | `0x06c00000` len `0x400` |
+| `top_combo_reg` | `0xc44` | `0x06c06000` len `0x2000` |
+| `combo1->top_reg` | `0x00`..`0x900` | `0x06c02000` len `0xa00` |
+| `combo1->phy_reg` | up to `0x18000` | `0x06ca0000` len `0x20000` |
+
+Every offset fits inside its range, and `0xc44` does not fit in `0x400`, which
+is what forces `top_combo_reg` to be the `0x06c06000` block rather than the
+other way round.
+
+## Remaining plan for SunxiPcieDxe
+
+Everything below is register-level settled except step 1.
+
+1. regulators: `bldo1` to 3.3V and `dcdc1` to 1.8V, both on the AXP PMU behind
+   I2C `twi@7083000`. **Open question** -- if they come up on their own we can
+   skip an I2C driver entirely, and that is the one thing still worth checking
+   on the board.
+2. drive **PL3** high (power)
+3. CCU clocks and resets, per the measured and now source-confirmed recipe
+4. serdes and PHY, per the sequence above
+5. **PD22** PERST#: assert low, delay, release high
+6. LTSSM: `app+0xC00 |= BIT0`, then poll `app+0xE0C` for `SMLH|RDLH`
+7. iATU outbound windows at `dbi + 0x300000 + n*0x200`, then hand off to the
+   stock EDK2 `PciHostBridgeDxe` and `NvmExpressDxe`
+
+Note for step 7: the NVMe fitted is a DRAM-less WD_BLACK SN7100, which leans on
+the Host Memory Buffer. `NvmExpressDxe` does not set up HMB, so expect it to be
+slower than under Linux. Not a blocker, just do not read the throughput as a
+sign something is wrong.
+
+### Hazard, learned the hard way: do not sweep the DBI window
+
+Reading every 4K page of the `0x480000` DBI window through `/dev/mem` hung the
+board hard on 2026-08-21. No ping on either address, and the UART7 console went
+silent rather than printing a panic, which means an external abort with the CPU
+wedged rather than a kernel oops. It needed a power cycle.
+
+The scan did return useful information before it died -- only
+`0x380000..0x47ffff` reads as anything other than all-ones -- but the same
+answer was available by sampling the handful of offsets that the U-Boot header
+actually names. Sample named offsets; do not sweep a window whose decode map
+you do not know.
+
+The safe offsets in this window, all verified readable with the link up:
+
+```
+app+0x000  PCIE_VER          app+0x800  PCIE_PHY_CFG
+app+0x004  PCIE_ADDR_PAGE_CFG   app+0xC00  PCIE_LTSSM_CTRL
+app+0x200  PCIE_AWMISC_CTRL     app+0xE04  PCIE_INT_ENABLE_CLR
+app+0x220  PCIE_ARMISC_CTRL     app+0xE0C  PCIE_LINK_STAT
+```
+
+where `app = 0x06400000`.
