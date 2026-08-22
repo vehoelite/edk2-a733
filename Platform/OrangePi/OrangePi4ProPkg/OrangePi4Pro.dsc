@@ -396,10 +396,12 @@
   Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSpiDxe/SunxiSpiDxe.inf
 
   #
-  # PCIe / NVMe: A733 DesignWare RC. DBI is locked from EDK2 so we adopt
-  # the live state programmed by BSP U-Boot — SunxiPcieDxe registers the
-  # NVMe controller at 0x22100000 as a NonDiscoverable NVMe device, and
-  # NvmExpressDxe binds via the synthesised PciIo.
+  # PCIe / NVMe: A733 DesignWare RC, brought up from cold by SunxiPcieDxe.
+  # There is nothing to adopt: the vendor U-Boot is built with CONFIG_PCI and
+  # CONFIG_AW_CADENCE_COMBOPHY unset and never touches PCIe. The DBI window is
+  # not locked either, it is simply unclocked until the CCU gates and the
+  # Cadence combo PHY have been brought up, and reading it before that hangs
+  # the bus rather than returning zero.
   #
   Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiPcieDxe/SunxiPcieDxe.inf
   MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
