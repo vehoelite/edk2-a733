@@ -67,6 +67,21 @@
 #define   SERDES_PHY_CFG_MUX_MASK     (0x7U << 24)
 #define   SERDES_PHY_CFG_MUX_PERI600  (0x1U << 24)
 #define   SERDES_PHY_CFG_M_DIV6       (6U - 1U)
+//
+// From the A733 user manual, 18.3.6.1 PCIe System Initialization, step 4:
+// "Write 1 to the MBUS_MAT_CLK_GATING_REG (bit[28]) to enable MBUS_MCLK clock".
+// This step was missing entirely. Both of these gating registers are key
+// protected -- the key has to accompany the write or it is silently dropped,
+// which is why a plain bit set would have looked like it worked and done
+// nothing. Register numbers and keys come from the BSP CCU driver
+// (serdes_mbus_gate_clk / serdes_ahb_gate_clk).
+//
+#define CCU_MBUS_MAT_CLK_GATING       0x05E0
+#define   MBUS_MASTER_KEY_VALUE       0x41055800
+#define   MBUS_SERDES_GATE            BIT28
+#define CCU_AHB_MAT_CLK_GATING        0x05C0
+#define   AHB_MASTER_KEY_VALUE        0x010000FF
+#define   AHB_SERDES_GATE             BIT8
 #define CCU_SERDES_BGR                0x13C4
 #define   SERDES_RST                  BIT16         // RST_BUS_SERDES
 
@@ -385,32 +400,31 @@ A733PcieClockInit (
   VOID
   )
 {
-  //
-  // Assert every reset before releasing it.
-  //
-  // Every test of this driver so far has been a WARM reboot out of a running
-  // Linux that already had PCIe up, so the core was already out of reset and
-  // holding whatever state Linux left behind. Merely OR-ing the release bits
-  // is then a no-op and the data link engine never restarts, which matches the
-  // symptom: the PHY re-inits, the physical layer trains (SMLH), but RDLH
-  // never comes up. The vendor U-Boot only ever runs from cold, so it never
-  // had to do this.
-  //
-  DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - asserting resets first\n"));
-  MmioAnd32 (
-    (UINTN)(A733_CCU_BASE + CCU_PCIE_BGR),
-    (UINT32)~(PCIE_RST | PCIE_PWRUP_RST)
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - serdes AHB and MBUS gates\n"));
+  MmioOr32 (
+    (UINTN)(A733_CCU_BASE + CCU_AHB_MAT_CLK_GATING),
+    AHB_MASTER_KEY_VALUE | AHB_SERDES_GATE
     );
-  MmioAnd32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_BGR), (UINT32)~SERDES_RST);
-  MmioAnd32 (
-    (UINTN)(A733_CCU_BASE + CCU_ITS_BGR),
-    (UINT32)~(ITS_PCIE0_RST | ITS_PCIE0_GATE)
+  MmioOr32 (
+    (UINTN)(A733_CCU_BASE + CCU_MBUS_MAT_CLK_GATING),
+    MBUS_MASTER_KEY_VALUE | MBUS_SERDES_GATE
     );
-  MmioAnd32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AUX_CLK), (UINT32)~PCIE_AUX_GATE);
-  MmioAnd32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AXI_SLV_CLK), (UINT32)~PCIE_AXI_SLV_GATE);
-  MicroSecondDelay (10000);
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: AHB gate 0x%08x, MBUS gate 0x%08x\n",
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_AHB_MAT_CLK_GATING)),
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_MBUS_MAT_CLK_GATING))
+    ));
 
   DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - serdes reset and clock\n"));
+  //
+  // The manual's 18.3.6.1 step 1 describes this as 2'b10 into bit[17:16], but
+  // that numbering does not map onto CCU 0x13C4 on this part: writing bit17
+  // reads back as zero, which left the serdes in reset and made the PHY PMA
+  // poll time out. The BSP CCU driver is correct for this register --
+  // RST_BUS_SERDES is BIT(16) -- and that value has produced PMA ready on
+  // every run. Keep the measured value, not the documented one.
+  //
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_BGR), SERDES_RST);
   //
   // Select the 600 MHz parent and divide by 6 for 100 MHz before ungating.
@@ -428,7 +442,22 @@ A733PcieClockInit (
     ));
 
   DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - PCIe resets\n"));
+  //
+  // The manual (18.3.6.1 step 2) says 2'b10 into bit[17:16] here, i.e. bit16
+  // clear. Tried on hardware: with bit16 clear the PHY PMA poll times out, so
+  // PCIE0_PWRUP_RST really does have to be de-asserted too. The vendor U-Boot
+  // sets both bits and that is what works. As with the serdes register above,
+  // the manual is reliable for the ORDER of these steps but not for the bit
+  // numbering of the BGR registers on this part.
+  //
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_BGR), PCIE_RST | PCIE_PWRUP_RST);
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: SERDES_BGR=0x%08x PCIE_BGR=0x%08x (want bit17 set, bit16 clear)\n",
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_BGR)),
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_BGR))
+    ));
 
   DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - aux and AXI slave clocks\n"));
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AUX_CLK), PCIE_AUX_GATE);
