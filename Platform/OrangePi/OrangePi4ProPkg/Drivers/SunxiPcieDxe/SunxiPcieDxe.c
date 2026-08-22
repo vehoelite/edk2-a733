@@ -34,6 +34,7 @@
 **/
 
 #include <Uefi.h>
+#include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
 #include <Library/TimerLib.h>
@@ -51,6 +52,17 @@
 #define   PCIE_AUX_GATE               BIT31
 #define CCU_PCIE_AXI_SLV_CLK          0x1384        // CLK_PCIE0_AXI_SLV
 #define   PCIE_AXI_SLV_GATE           BIT31
+//
+// SUNXI_CCU_M_WITH_MUX_GATE: M in bits 0-4, mux in bits 24-26, gate bit 31.
+// Parents are { pll-peri0-600m, pll-peri0-600m, pll-peri0-400m }, so mux 2 is
+// the 400 MHz source the vendor selects, with the divider at 1.
+//
+// These are multi-bit fields, so they have to be assigned, not OR-ed. OR-ing
+// 2 into a mux that already reads 1 would give 3, which is off the end of a
+// three-entry parent list.
+//
+#define   PCIE_AXI_SLV_M_MASK         0x0000001FU
+#define   PCIE_AXI_SLV_MUX_MASK       (0x7U << 24)
 #define   PCIE_AXI_SLV_SRC_400M       (2U << 24)
 #define CCU_PCIE_BGR                  0x138C
 #define   PCIE_RST                    BIT17         // RST_BUS_PCIE0
@@ -159,6 +171,77 @@
 #define   DBI_LINK_WIDTH_SPEED_CTRL       0x80C
 #define     PORT_LOGIC_LINK_WIDTH_MASK    (0x1FFU << 8)
 #define     PORT_LOGIC_LINK_WIDTH_1_LANE  (0x001U << 8)
+//
+// DesignWare port-logic debug. The vendor glue LINK_STAT bit is not trustworthy
+// on its own: it can be sticky, and sampling it every 100ms would alias a link
+// that trains, drops and retrains every few milliseconds into a steady "up".
+// PL_DEBUG0 carries the real LTSSM state, so sample it in a tight loop and
+// build a histogram.
+//
+#define   DBI_PL_DEBUG0                   0x728
+#define     PL_DEBUG0_LTSSM_MASK          0x3F
+#define   DBI_PL_DEBUG1                   0x72C
+#define     PL_DEBUG1_LINK_UP             BIT4
+#define     PL_DEBUG1_LINK_IN_TRAINING    BIT29
+//
+// Transmit flow-control credit status. If these are non-zero the RC has
+// received the endpoint InitFC1 DLLPs, i.e. the far side data link is alive and
+// the failure is in completing FC_INIT2. If they stay zero the RC has never
+// seen a single valid InitFC DLLP.
+//
+#define   DBI_TX_P_FC_CREDIT_STATUS       0x730
+#define   DBI_TX_NP_FC_CREDIT_STATUS      0x734
+#define   DBI_TX_CPL_FC_CREDIT_STATUS     0x738
+#define   DBI_QUEUE_STATUS                0x73C
+//
+// PCIe extended capabilities start at 0x100. Each header holds the capability
+// id in bits 15:0 and the offset of the next one in bits 31:20.
+//
+// DLLPs carry a CRC and have no retry: a corrupt one is silently discarded. So
+// a receive path that mangles symbols can hold L0 happily -- the LTSSM only
+// needs ordered sets and framing -- while dropping every InitFC DLLP, which is
+// exactly the stable-L0-with-zero-credits picture we see. Counting correctable
+// receiver errors distinguishes "InitFC1s arrive but fail CRC" from "nothing
+// arrives at all".
+//
+#define   DBI_EXT_CAP_BASE                0x100
+#define     EXT_CAP_ID_MASK               0x0000FFFFU
+#define     EXT_CAP_NEXT_SHIFT            20
+#define     EXT_CAP_ID_AER                0x0001
+#define     EXT_CAP_ID_VNDR               0x000B      // RAS D.E.S. lives here
+#define   AER_UNCORR_STATUS               0x04
+#define   AER_CORR_STATUS                 0x10
+#define     AER_CORR_RECEIVER_ERROR       BIT0
+#define     AER_CORR_BAD_TLP              BIT6
+#define     AER_CORR_BAD_DLLP             BIT7
+#define     AER_CORR_REPLAY_ROLLOVER      BIT8
+#define     AER_CORR_REPLAY_TIMER         BIT12
+#define   AER_CORR_MASK                   0x14
+//
+// Synopsys debug event counters, in the vendor extended capability. Layout and
+// event numbering taken from the mainline kernel driver
+// drivers/pci/controller/dwc/pcie-designware-debugfs.c, which is public, rather
+// than from the Synopsys databook.
+//
+#define   RAS_EVENT_COUNTER_CTRL          0x08
+#define     RAS_GROUP_SHIFT               24          // bits 27:24
+#define     RAS_EVENT_SHIFT               16          // bits 23:16
+#define     RAS_LANE_SHIFT                8           // bits 11:8
+#define     RAS_COUNTER_STATUS            BIT7
+#define     RAS_ENABLE_SHIFT              2           // bits 4:2
+#define     RAS_PER_EVENT_ON              0x3
+#define     RAS_PER_EVENT_OFF             0x1
+//
+// Standard Synopsys encoding for the enable field: 000 means no change, which
+// is why the kernel can clear the field while re-selecting an event without
+// disabling anything. 111 turns every counter on at once, which is what we
+// want here -- enabling them one at a time around each read never let them
+// accumulate.
+//
+#define     RAS_ALL_EVENT_ON              0x7
+#define     RAS_ALL_EVENT_OFF             0x5
+#define   RAS_EVENT_COUNTER_DATA          0x0C
+#define     PCI_EXP_LNKSTA                0x12    // cap + 0x12
 #define   DBI_MISC_CONTROL_1_CFG          0x8BC
 #define     DBI_RO_WR_EN                  BIT0
 #define   DBI_CAP_LIST_PTR                0x34
@@ -416,16 +499,7 @@ A733PcieClockInit (
     MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_MBUS_MAT_CLK_GATING))
     ));
 
-  DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - serdes reset and clock\n"));
-  //
-  // The manual's 18.3.6.1 step 1 describes this as 2'b10 into bit[17:16], but
-  // that numbering does not map onto CCU 0x13C4 on this part: writing bit17
-  // reads back as zero, which left the serdes in reset and made the PHY PMA
-  // poll time out. The BSP CCU driver is correct for this register --
-  // RST_BUS_SERDES is BIT(16) -- and that value has produced PMA ready on
-  // every run. Keep the measured value, not the documented one.
-  //
-  MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_BGR), SERDES_RST);
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - serdes phy cfg clock\n"));
   //
   // Select the 600 MHz parent and divide by 6 for 100 MHz before ungating.
   //
@@ -461,10 +535,42 @@ A733PcieClockInit (
 
   DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - aux and AXI slave clocks\n"));
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AUX_CLK), PCIE_AUX_GATE);
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: AUX_CLK before=0x%08x AXI_SLV before=0x%08x\n",
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AUX_CLK)),
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AXI_SLV_CLK))
+    ));
+
+  //
+  // Assign the mux and divider rather than OR-ing them. These are multi-bit
+  // fields: OR-ing 2 into a mux that already reads 1 gives 3, which is off the
+  // end of a three-entry parent list, and the divider was never cleared at all.
+  // Verified on hardware that this boots.
+  //
+  //
+  // Assigning the mux/divider explicitly (clear then set mux 2) HANGS the
+  // board: EDK2 stops with a silent console, which is what a dead AXI slave
+  // clock looks like when the first DBI access goes out. The likely reason is
+  // that pll-peri0-400m, the mux 2 parent, is not running this early, so
+  // forcing that parent kills the clock. The vendor OR is safe because in
+  // practice it does not change the field.
+  //
+  // Left as the vendor form deliberately. The before/after prints above exist
+  // to capture what the field actually holds -- decide from that reading, not
+  // from the parent table.
+  //
   MmioOr32 (
     (UINTN)(A733_CCU_BASE + CCU_PCIE_AXI_SLV_CLK),
     PCIE_AXI_SLV_SRC_400M | PCIE_AXI_SLV_GATE
     );
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: AUX_CLK after=0x%08x AXI_SLV after=0x%08x (want mux 2, M 0, gated)\n",
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AUX_CLK)),
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AXI_SLV_CLK))
+    ));
 
   DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - ITS\n"));
   MmioOr32 (
@@ -495,6 +601,29 @@ A733PciePhyInit (
 
   DEBUG ((DEBUG_ERROR, "SunxiPcie: serdes dcxo gate\n"));
   MmioOr32 ((UINTN)A733_DCXO_SERDES_REG, DCXO_SERDES1_GATING);
+
+  //
+  // De-assert the serdes reset HERE, after the serdes clock and the dcxo
+  // gate are already running -- this is what the Linux BSP does and it is
+  // the one ordering difference between it and the vendor U-Boot:
+  //
+  //     clk_set_rate(serdes_clk, 100000000); clk_prepare_enable(serdes_clk);
+  //     clk_prepare_enable(dcxo_serdes1_clk);
+  //     reset_control_deassert(sunxi_cphy->serdes_reset);   <-- Linux only
+  //
+  // We were releasing it in clock init, before the serdes clock existed.
+  // Releasing a block from reset with no clock running lets it latch a bad
+  // state, which fits a PHY that reports PMA ready while the data link
+  // never comes up.
+  //
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: serdes reset de-assert (post-clock)\n"));
+  MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_BGR), SERDES_RST);
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: SERDES_BGR=0x%08x\n",
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_BGR))
+    ));
+  MicroSecondDelay (1000);
 
   DEBUG ((DEBUG_ERROR, "SunxiPcie: serdes subsystem\n"));
   MmioOr32 ((UINTN)(SERDES_SUBSYS_BASE + SUBSYS_PCIE_BGR), SUBSYS_PCIE_GATING);
@@ -705,6 +834,297 @@ A733PcieSetLinkRate (
 }
 
 /**
+  Walk the extended capability list looking for one id.
+**/
+STATIC
+UINT32
+A733PcieFindExtCapability (
+  IN UINT16  CapId
+  )
+{
+  UINT32  Offset;
+  UINT32  Header;
+  UINTN   Guard;
+
+  Offset = DBI_EXT_CAP_BASE;
+
+  for (Guard = 0; (Offset != 0) && (Offset < 0x1000) && (Guard < 64); Guard++) {
+    Header = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + Offset));
+    if ((Header == 0) || (Header == 0xFFFFFFFF)) {
+      break;
+    }
+
+    if ((Header & EXT_CAP_ID_MASK) == CapId) {
+      return Offset;
+    }
+
+    Offset = Header >> EXT_CAP_NEXT_SHIFT;
+  }
+
+  return 0;
+}
+
+/**
+  Read one Synopsys debug event counter.
+**/
+STATIC
+UINT32
+A733PcieReadRasCounter (
+  IN UINT32  RasCap,
+  IN UINT8   Group,
+  IN UINT8   Event
+  )
+{
+  UINTN   Ctrl;
+  UINT32  Value;
+
+  Ctrl = (UINTN)(A733_PCIE_DBI_BASE + RasCap + RAS_EVENT_COUNTER_CTRL);
+
+  //
+  // Select only. The enable field is left at 000 (no change) so selecting an
+  // event never disturbs the counters, which are turned on once, globally.
+  //
+  Value  = MmioRead32 (Ctrl);
+  Value &= ~((0xFU << RAS_GROUP_SHIFT) | (0xFFU << RAS_EVENT_SHIFT) |
+             (0xFU << RAS_LANE_SHIFT) | (0x7U << RAS_ENABLE_SHIFT));
+  Value |= ((UINT32)Group << RAS_GROUP_SHIFT) | ((UINT32)Event << RAS_EVENT_SHIFT);
+  MmioWrite32 (Ctrl, Value);
+
+  return MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + RasCap + RAS_EVENT_COUNTER_DATA));
+}
+
+/**
+  Sweep the debug event counters that matter for a link that sits in L0 without
+  ever completing flow control initialisation.
+
+  AER says there are no correctable errors at all, so this is the finer
+  instrument: elastic buffer over/underrun would mean a clocking mismatch,
+  decode or disparity or framing errors would mean symbol corruption, and
+  fc_timeout would say flow control initialisation is being attempted and
+  timing out rather than never starting.
+**/
+STATIC
+VOID
+A733PcieReportRasCounters (
+  VOID
+  )
+{
+  STATIC CONST struct {
+    CONST CHAR8    *Name;
+    UINT8          Group;
+    UINT8          Event;
+  } Counters[] = {
+    { "ebuf_overflow",        0x0, 0x0 },
+    { "ebuf_underrun",        0x0, 0x1 },
+    { "decode_err",           0x0, 0x2 },
+    { "disparity_err",        0x0, 0x3 },
+    { "sync_header_err",      0x0, 0x5 },
+    { "rx_valid_deassert",    0x0, 0x6 },
+    { "detect_ei_infer",      0x1, 0x5 },
+    { "receiver_err",         0x1, 0x6 },
+    { "rx_recovery_req",      0x1, 0x7 },
+    { "n_fts_timeout",        0x1, 0x8 },
+    { "framing_err",          0x1, 0x9 },
+    { "framing_err_in_l0",    0x1, 0xC },
+    { "bad_tlp",              0x2, 0x0 },
+    { "lcrc_err",             0x2, 0x1 },
+    { "bad_dllp",             0x2, 0x2 },
+    { "rx_nak_dllp",          0x2, 0x5 },
+    { "tx_nak_dllp",          0x2, 0x6 },
+    { "fc_timeout",           0x3, 0x0 },
+    { "l0_to_recovery",       0x5, 0x0 }
+  };
+
+  UINT32  RasCap;
+  UINTN   Index;
+  UINT32  Value;
+
+  RasCap = A733PcieFindExtCapability (EXT_CAP_ID_VNDR);
+  if (RasCap == 0) {
+    DEBUG ((DEBUG_ERROR, "SunxiPcie: no vendor debug capability found\n"));
+    return;
+  }
+
+  //
+  // Turn every counter on in one write, then let the link run.
+  //
+  Value  = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + RasCap + RAS_EVENT_COUNTER_CTRL));
+  Value &= ~(0x7U << RAS_ENABLE_SHIFT);
+  Value |= (RAS_ALL_EVENT_ON << RAS_ENABLE_SHIFT);
+  MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + RasCap + RAS_EVENT_COUNTER_CTRL), Value);
+
+  Value = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + RasCap + RAS_EVENT_COUNTER_CTRL));
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: counter ctrl after all-on = 0x%08x (status bit %u)\n",
+    Value,
+    (Value & RAS_COUNTER_STATUS) ? 1 : 0
+    ));
+
+  MicroSecondDelay (300000);
+
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: debug event counters at cap 0x%03x\n", RasCap));
+  for (Index = 0; Index < sizeof (Counters) / sizeof (Counters[0]); Index++) {
+    Value = A733PcieReadRasCounter (RasCap, Counters[Index].Group, Counters[Index].Event);
+    DEBUG ((
+      DEBUG_ERROR,
+      "SunxiPcie:   %-20a = %u\n",
+      Counters[Index].Name,
+      Value
+      ));
+  }
+}
+
+/**
+  Clear the correctable error status, let the link run, and report what came
+  back. Accumulating receiver or bad-DLLP errors while the LTSSM sits in L0
+  means the receive path is corrupting symbols, which silently destroys the
+  InitFC DLLPs that flow control initialisation depends on.
+**/
+STATIC
+VOID
+A733PcieReportAer (
+  VOID
+  )
+{
+  UINT32  Aer;
+  UINT32  First;
+  UINT32  Second;
+
+  Aer = A733PcieFindExtCapability (EXT_CAP_ID_AER);
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: AER cap at 0x%03x, RAS/vendor cap at 0x%03x\n",
+    Aer,
+    A733PcieFindExtCapability (EXT_CAP_ID_VNDR)
+    ));
+
+  if (Aer == 0) {
+    return;
+  }
+
+  First = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + Aer + AER_CORR_STATUS));
+
+  //
+  // Write-1-to-clear, then let it accumulate for a while.
+  //
+  MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + Aer + AER_CORR_STATUS), 0xFFFFFFFF);
+  MicroSecondDelay (200000);
+  Second = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + Aer + AER_CORR_STATUS));
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: AER corr before=0x%08x after-200ms=0x%08x uncorr=0x%08x mask=0x%08x\n",
+    First,
+    Second,
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + Aer + AER_UNCORR_STATUS)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + Aer + AER_CORR_MASK))
+    ));
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie:   rx_err=%u bad_tlp=%u bad_dllp=%u replay_ro=%u replay_to=%u\n",
+    (Second & AER_CORR_RECEIVER_ERROR) ? 1 : 0,
+    (Second & AER_CORR_BAD_TLP) ? 1 : 0,
+    (Second & AER_CORR_BAD_DLLP) ? 1 : 0,
+    (Second & AER_CORR_REPLAY_ROLLOVER) ? 1 : 0,
+    (Second & AER_CORR_REPLAY_TIMER) ? 1 : 0
+    ));
+}
+
+/**
+  Sample the real LTSSM state from PL_DEBUG0 as fast as possible and report a
+  histogram, so a link that is bouncing cannot hide behind a slow poll of the
+  vendor status bit.
+**/
+STATIC
+VOID
+A733PcieLtssmHistogram (
+  VOID
+  )
+{
+  UINT32  Counts[64];
+  UINT32  Index;
+  UINT32  Sample;
+  UINT32  State;
+  UINT32  Dbg1Training;
+  UINT32  Dbg1Up;
+
+  ZeroMem (Counts, sizeof (Counts));
+  Dbg1Training = 0;
+  Dbg1Up       = 0;
+
+  //
+  // No delay in the loop at all: MMIO reads are slow enough on their own, and
+  // any added delay would reintroduce the aliasing this is meant to expose.
+  //
+  for (Index = 0; Index < 200000; Index++) {
+    Sample = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_PL_DEBUG0));
+    State  = Sample & PL_DEBUG0_LTSSM_MASK;
+    Counts[State]++;
+
+    Sample = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_PL_DEBUG1));
+    if ((Sample & PL_DEBUG1_LINK_IN_TRAINING) != 0) {
+      Dbg1Training++;
+    }
+
+    if ((Sample & PL_DEBUG1_LINK_UP) != 0) {
+      Dbg1Up++;
+    }
+  }
+
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: LTSSM histogram over 200000 samples\n"));
+  for (Index = 0; Index < 64; Index++) {
+    if (Counts[Index] != 0) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "SunxiPcie:   state 0x%02x : %u\n",
+        Index,
+        Counts[Index]
+        ));
+    }
+  }
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie:   PL_DEBUG1 link_up=%u in_training=%u (of 200000)\n",
+    Dbg1Up,
+    Dbg1Training
+    ));
+}
+
+/**
+  Report the flow control credit state and the link status register.
+**/
+STATIC
+VOID
+A733PcieReportDl (
+  IN UINT8  Cap
+  )
+{
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: TX FC credits P=0x%08x NP=0x%08x CPL=0x%08x QUEUE=0x%08x\n",
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_TX_P_FC_CREDIT_STATUS)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_TX_NP_FC_CREDIT_STATUS)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_TX_CPL_FC_CREDIT_STATUS)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_QUEUE_STATUS))
+    ));
+
+  if (Cap != 0) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "SunxiPcie: LNKSTA=0x%04x (speed %u, width %u, training %u, DLLLA %u)\n",
+      MmioRead16 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKSTA)),
+      MmioRead16 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKSTA)) & 0xF,
+      (MmioRead16 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKSTA)) >> 4) & 0x3F,
+      (MmioRead16 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKSTA)) >> 11) & 1,
+      (MmioRead16 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKSTA)) >> 13) & 1
+      ));
+  }
+}
+
+/**
   Enable link training and wait for both the physical and data link layers.
 **/
 STATIC
@@ -746,17 +1166,6 @@ A733PcieStartLink (
       return EFI_SUCCESS;
     }
 
-    if ((Elapsed % 100000) == 0) {
-      DEBUG ((
-        DEBUG_ERROR,
-        "SunxiPcie:   t=%6u us LINK_STAT=0x%08x LTSSM=0x%08x PHY_CFG=0x%08x\n",
-        Elapsed,
-        Status,
-        MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_LTSSM_CTRL)),
-        MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_PHY_CFG))
-        ));
-    }
-
     MicroSecondDelay (LINK_POLL_INTERVAL_US);
   }
 
@@ -768,6 +1177,23 @@ A733PcieStartLink (
     (Status & APP_SMLH_LINK_UP) ? 1 : 0,
     (Status & APP_RDLH_LINK_UP) ? 1 : 0
     ));
+
+  //
+  // The glue status bit says the physical layer is up. Get ground truth from
+  // the DesignWare port logic before believing it.
+  //
+  A733PcieLtssmHistogram ();
+  A733PcieReportDl (A733PcieFindCapability (PCI_CAP_ID_EXP));
+  A733PcieReportAer ();
+  A733PcieReportRasCounters ();
+
+  //
+  // Read the credits a second time after the AER dwell. If they are still zero
+  // after another 200 ms, flow control really never completes rather than
+  // simply being slow.
+  //
+  A733PcieReportDl (A733PcieFindCapability (PCI_CAP_ID_EXP));
+
   return EFI_TIMEOUT;
 }
 
@@ -804,14 +1230,21 @@ SunxiPcieDxeEntry (
   // come up.
   //
   //
-  // Power-cycle the slot rather than just asserting power. The vendor flow
-  // drives it low for 100 ms first, and an endpoint that was left in a strange
-  // state by a previous boot needs that to come back cleanly.
+  // Assert slot power and leave it alone. Do NOT power-cycle it.
   //
-  DEBUG ((DEBUG_ERROR, "SunxiPcie: PL3 power cycle, PD22 PERST# low\n"));
-  PioDriveOutput (PortL, PIN_POWER, FALSE);
-  MicroSecondDelay (100000);
+  // This used to drop PL3 for 100 ms first, copied from the vendor U-Boot. The
+  // Linux BSP, which brings this drive up reliably on this board, never touches
+  // the power GPIO at all -- it only drives PERST#. Cutting the slot rail and
+  // restoring it 100 ms later means PERST# is released into a drive whose
+  // controller is still starting up: an NVMe device commonly needs far longer
+  // than that before its data link layer will talk. That matches exactly what
+  // the diagnostics show -- the LTSSM parks in L0, the receive path reports
+  // zero errors of any kind, and yet no InitFC DLLPs ever arrive, so flow
+  // control credits stay at zero and rdlh_link_up never asserts.
+  //
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: PL3 power high (no cycle), PD22 PERST# low\n"));
   PioDriveOutput (PortL, PIN_POWER, TRUE);
+  MicroSecondDelay (10000);
 
   PioDriveOutput (PortD, PIN_PERST, FALSE);
   MicroSecondDelay (1000);
