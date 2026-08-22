@@ -112,13 +112,53 @@
 #define   APP_LINK_UP                 (APP_SMLH_LINK_UP | APP_RDLH_LINK_UP)
 
 //
+// DesignWare link configuration, in DBI. The core has to be told the lane
+// count and the target speed BEFORE link training is enabled; leaving it at
+// reset defaults gets the physical layer up (SMLH) but the data link layer
+// never completes (RDLH stays 0), which is exactly what the first hardware
+// run showed.
+//
+#define   DBI_PORT_LINK_CONTROL           0x710
+#define     PORT_LINK_MODE_MASK           (0x3FU << 16)
+#define     PORT_LINK_MODE_1_LANE         (0x01U << 16)
+#define   DBI_LINK_WIDTH_SPEED_CTRL       0x80C
+#define     PORT_LOGIC_LINK_WIDTH_MASK    (0x1FFU << 8)
+#define     PORT_LOGIC_LINK_WIDTH_1_LANE  (0x001U << 8)
+#define   DBI_MISC_CONTROL_1_CFG          0x8BC
+#define     DBI_RO_WR_EN                  BIT0
+#define   DBI_CAP_LIST_PTR                0x34
+#define     PCI_CAP_ID_EXP                0x10
+#define     PCI_CAP_ID_MAX                0x14
+#define     CAP_ID_MASK                   0x00FF
+#define     NEXT_CAP_PTR_MASK             0xFF00
+#define     PCI_EXP_LNKCAP                12      // cap + 0x0C
+#define       PCI_EXP_LNKCAP_SLS          0x0000000FU
+#define     PCI_EXP_LNKCTL2               48      // cap + 0x30
+#define       PCI_EXP_LNKCTL2_TLS         0x0000000FU
+#define     PCIE_LINK_SPEED_GEN3          0x3
+
+//
+// Root complex config, from the vendor setup_rc(). Not needed to train the
+// link, but needed before anything can enumerate behind it.
+//
+#define   DBI_BAR0                        0x10
+#define   DBI_BAR1                        0x14
+#define   DBI_PRIMARY_BUS                 0x18
+#define     RC_BUS_NUMBERS                0x00FF0100U   // pri 0, sec 1, sub 0xff
+#define   DBI_COMMAND                     0x04
+#define     CMD_IO                        BIT0
+#define     CMD_MEMORY                    BIT1
+#define     CMD_MASTER                    BIT2
+#define     CMD_SERR                      BIT8
+
+//
 // Timeouts. The vendor code spins forever on the PMA-ready poll; firmware
 // must not, so every wait here is bounded and reports where it gave up.
 //
 #define PHY_POLL_INTERVAL_US          100
 #define PHY_POLL_TIMEOUT_US           100000        // 100 ms
 #define LINK_POLL_INTERVAL_US         1000
-#define LINK_POLL_TIMEOUT_US          100000        // 100 ms
+#define LINK_POLL_TIMEOUT_US          1000000       // 1 s, generous for gen3 retrain
 
 //
 // One entry of the Cadence combo PHY init sequence. The table below is
@@ -325,21 +365,21 @@ A733PcieClockInit (
   VOID
   )
 {
-  DEBUG ((DEBUG_INFO, "SunxiPcie: CCU - serdes reset and clock\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - serdes reset and clock\n"));
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_BGR), SERDES_RST);
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_PHY_CFG_CLK), SERDES_PHY_CFG_GATE);
 
-  DEBUG ((DEBUG_INFO, "SunxiPcie: CCU - PCIe resets\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - PCIe resets\n"));
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_BGR), PCIE_RST | PCIE_PWRUP_RST);
 
-  DEBUG ((DEBUG_INFO, "SunxiPcie: CCU - aux and AXI slave clocks\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - aux and AXI slave clocks\n"));
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AUX_CLK), PCIE_AUX_GATE);
   MmioOr32 (
     (UINTN)(A733_CCU_BASE + CCU_PCIE_AXI_SLV_CLK),
     PCIE_AXI_SLV_SRC_400M | PCIE_AXI_SLV_GATE
     );
 
-  DEBUG ((DEBUG_INFO, "SunxiPcie: CCU - ITS\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - ITS\n"));
   MmioOr32 (
     (UINTN)(A733_CCU_BASE + CCU_ITS_BGR),
     ITS_PCIE0_RST | ITS_PCIE0_GATE
@@ -366,18 +406,18 @@ A733PciePhyInit (
   UINT32  Elapsed;
   UINT32  Value;
 
-  DEBUG ((DEBUG_INFO, "SunxiPcie: serdes dcxo gate\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: serdes dcxo gate\n"));
   MmioOr32 ((UINTN)A733_DCXO_SERDES_REG, DCXO_SERDES1_GATING);
 
-  DEBUG ((DEBUG_INFO, "SunxiPcie: serdes subsystem\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: serdes subsystem\n"));
   MmioOr32 ((UINTN)(SERDES_SUBSYS_BASE + SUBSYS_PCIE_BGR), SUBSYS_PCIE_GATING);
   MmioOr32 ((UINTN)(SERDES_SUBSYS_BASE + SUBSYS_DBG_CTL), SUBSYS_DIS_COMBO1_AUTOGATE);
 
-  DEBUG ((DEBUG_INFO, "SunxiPcie: combo1 pipe -> PCIe\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: combo1 pipe -> PCIe\n"));
   MmioWrite32 ((UINTN)(SERDES_COMBO_BASE + SUBSYS_COMB1_PIPE), SUBSYS_COMB1_PIPE_PCIE);
 
   DEBUG ((
-    DEBUG_INFO,
+    DEBUG_ERROR,
     "SunxiPcie: running PHY sequence, %u ops\n",
     (UINT32)(sizeof (mPciePhyInitOps) / sizeof (mPciePhyInitOps[0]))
     ));
@@ -413,7 +453,7 @@ A733PciePhyInit (
           Value = MmioRead32 (Reg);
           if ((Value & mPciePhyInitOps[Index].Value) != 0) {
             DEBUG ((
-              DEBUG_INFO,
+              DEBUG_ERROR,
               "SunxiPcie: PMA ready after %u us (op %u, reg 0x%x = 0x%08x)\n",
               Elapsed, (UINT32)Index, (UINT32)mPciePhyInitOps[Index].Offset, Value
               ));
@@ -445,8 +485,136 @@ A733PciePhyInit (
     }
   }
 
-  DEBUG ((DEBUG_INFO, "SunxiPcie: PHY sequence complete\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: PHY sequence complete\n"));
   return EFI_SUCCESS;
+}
+
+/**
+  Stop link training. The vendor flow disables LTSSM before touching the reset
+  GPIOs and configuring the core, and only re-enables it once everything is in
+  place.
+**/
+STATIC
+VOID
+A733PcieLtssmDisable (
+  VOID
+  )
+{
+  MmioAnd32 (
+    (UINTN)(A733_PCIE_APP_BASE + APP_LTSSM_CTRL),
+    (UINT32)~APP_LINK_TRAINING
+    );
+}
+
+/**
+  Find a capability in the root port's own config space, walking the list.
+
+  Safe to call only once the clocks are up, since this reads DBI.
+**/
+STATIC
+UINT8
+A733PcieFindCapability (
+  IN UINT8  CapId
+  )
+{
+  UINT8   Ptr;
+  UINT16  Reg;
+  UINTN   Guard;
+
+  Ptr = (UINT8)(MmioRead16 ((UINTN)(A733_PCIE_DBI_BASE + DBI_CAP_LIST_PTR)) & CAP_ID_MASK);
+
+  //
+  // Bounded so a corrupt or unclocked config space cannot spin forever.
+  //
+  for (Guard = 0; (Ptr != 0) && (Guard < 48); Guard++) {
+    Reg = MmioRead16 ((UINTN)(A733_PCIE_DBI_BASE + Ptr));
+    if ((Reg & CAP_ID_MASK) > PCI_CAP_ID_MAX) {
+      break;
+    }
+
+    if ((Reg & CAP_ID_MASK) == CapId) {
+      return Ptr;
+    }
+
+    Ptr = (UINT8)((Reg & NEXT_CAP_PTR_MASK) >> 8);
+  }
+
+  return 0;
+}
+
+/**
+  Tell the DesignWare core how wide and how fast the link is.
+
+  This is the step whose absence left RDLH at 0 on the first hardware run: the
+  physical layer trained happily, but without a configured lane count and
+  target speed the data link layer never came up. Writes to LNKCAP need the
+  read-only-write-enable bit, which is dropped again afterwards.
+**/
+STATIC
+VOID
+A733PcieSetLinkRate (
+  VOID
+  )
+{
+  UINT8   Cap;
+  UINT32  Value;
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: DBI vendor/device = 0x%08x\n",
+    MmioRead32 ((UINTN)A733_PCIE_DBI_BASE)
+    ));
+
+  MmioOr32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_MISC_CONTROL_1_CFG), DBI_RO_WR_EN);
+
+  Cap = A733PcieFindCapability (PCI_CAP_ID_EXP);
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: PCIe express cap at 0x%02x\n", Cap));
+
+  if (Cap != 0) {
+    Value  = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKCTL2));
+    Value &= ~PCI_EXP_LNKCTL2_TLS;
+    Value |= PCIE_LINK_SPEED_GEN3;
+    MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKCTL2), Value);
+
+    Value  = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKCAP));
+    Value &= ~PCI_EXP_LNKCAP_SLS;
+    Value |= PCIE_LINK_SPEED_GEN3;
+    MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKCAP), Value);
+  }
+
+  MmioAndThenOr32 (
+    (UINTN)(A733_PCIE_DBI_BASE + DBI_PORT_LINK_CONTROL),
+    ~PORT_LINK_MODE_MASK,
+    PORT_LINK_MODE_1_LANE
+    );
+
+  MmioAndThenOr32 (
+    (UINTN)(A733_PCIE_DBI_BASE + DBI_LINK_WIDTH_SPEED_CTRL),
+    ~PORT_LOGIC_LINK_WIDTH_MASK,
+    PORT_LOGIC_LINK_WIDTH_1_LANE
+    );
+
+  //
+  // Root complex config: BARs, bus numbers and the command register. Without
+  // these nothing can enumerate behind the bridge even once the link is up.
+  //
+  MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_BAR0), 0x4);
+  MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_BAR1), 0x0);
+  MmioAndThenOr32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_PRIMARY_BUS), 0xFF000000, RC_BUS_NUMBERS);
+  MmioAndThenOr32 (
+    (UINTN)(A733_PCIE_DBI_BASE + DBI_COMMAND),
+    0xFFFF0000,
+    CMD_IO | CMD_MEMORY | CMD_MASTER | CMD_SERR
+    );
+
+  MmioAnd32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_MISC_CONTROL_1_CFG), (UINT32)~DBI_RO_WR_EN);
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: link configured 1 lane gen3, PORT_LINK=0x%08x WIDTH_SPEED=0x%08x\n",
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_PORT_LINK_CONTROL)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_LINK_WIDTH_SPEED_CTRL))
+    ));
 }
 
 /**
@@ -463,7 +631,7 @@ A733PcieStartLink (
   UINT32  Ltssm;
 
   Ltssm = MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_LTSSM_CTRL));
-  DEBUG ((DEBUG_INFO, "SunxiPcie: LTSSM_CTRL before = 0x%08x\n", Ltssm));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: LTSSM_CTRL before = 0x%08x\n", Ltssm));
 
   MmioOr32 (
     (UINTN)(A733_PCIE_APP_BASE + APP_LTSSM_CTRL),
@@ -474,7 +642,7 @@ A733PcieStartLink (
     Status = MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_LINK_STAT));
     if ((Status & APP_LINK_UP) == APP_LINK_UP) {
       DEBUG ((
-        DEBUG_INFO,
+        DEBUG_ERROR,
         "SunxiPcie: LINK UP after %u us, LINK_STAT = 0x%08x\n",
         Elapsed, Status
         ));
@@ -513,12 +681,12 @@ SunxiPcieDxeEntry (
   UINT64      PortD;
   UINT64      PortL;
 
-  DEBUG ((DEBUG_INFO, "SunxiPcie: start, bringing up the root complex\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: start, bringing up the root complex\n"));
 
   PortD = PioBankBase (PIO_BANK_D);
   PortL = A733_R_PIO_BASE;
   DEBUG ((
-    DEBUG_INFO,
+    DEBUG_ERROR,
     "SunxiPcie: PD bank @0x%lx (expect 0x02000200), PL bank @0x%lx\n",
     PortD, PortL
     ));
@@ -527,8 +695,16 @@ SunxiPcieDxeEntry (
   // Slot power on, and hold the endpoint in reset while the clocks and PHY
   // come up.
   //
-  DEBUG ((DEBUG_INFO, "SunxiPcie: PL3 power high, PD22 PERST# low\n"));
+  //
+  // Power-cycle the slot rather than just asserting power. The vendor flow
+  // drives it low for 100 ms first, and an endpoint that was left in a strange
+  // state by a previous boot needs that to come back cleanly.
+  //
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: PL3 power cycle, PD22 PERST# low\n"));
+  PioDriveOutput (PortL, PIN_POWER, FALSE);
+  MicroSecondDelay (100000);
   PioDriveOutput (PortL, PIN_POWER, TRUE);
+
   PioDriveOutput (PortD, PIN_PERST, FALSE);
   MicroSecondDelay (1000);
 
@@ -545,10 +721,26 @@ SunxiPcieDxeEntry (
   // stable. 10 ms is generous for a soldered-down single lane slot and costs
   // nothing at boot.
   //
-  DEBUG ((DEBUG_INFO, "SunxiPcie: releasing PERST#\n"));
-  MicroSecondDelay (10000);
+  //
+  // Reset dance, following the vendor order exactly: training off, WAKE high,
+  // then PERST# low for a full 100 ms before release. PCI Express requires
+  // 100 ms here; the 10 ms used previously got the physical layer up (SMLH)
+  // but never completed the data link layer (RDLH stayed 0).
+  //
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: LTSSM off, WAKE high, PERST# low 100ms\n"));
+  A733PcieLtssmDisable ();
+
+  PioDriveOutput (PortD, PIN_WAKE, TRUE);
+  PioDriveOutput (PortD, PIN_PERST, FALSE);
+  MicroSecondDelay (100000);
   PioDriveOutput (PortD, PIN_PERST, TRUE);
-  MicroSecondDelay (10000);
+  MicroSecondDelay (100000);
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: PERST# released\n"));
+
+  //
+  // DBI is answerable from here on, because the clocks and the PHY are up.
+  //
+  A733PcieSetLinkRate ();
 
   Status = A733PcieStartLink ();
   if (EFI_ERROR (Status)) {
@@ -567,11 +759,11 @@ SunxiPcieDxeEntry (
   // when it was attempted before the clocks were up.
   //
   DEBUG ((
-    DEBUG_INFO,
+    DEBUG_ERROR,
     "SunxiPcie: DBI vendor/device = 0x%08x\n",
     MmioRead32 ((UINTN)A733_PCIE_DBI_BASE)
     ));
 
-  DEBUG ((DEBUG_INFO, "SunxiPcie: root complex is up\n"));
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: root complex is up\n"));
   return EFI_SUCCESS;
 }

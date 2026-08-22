@@ -140,12 +140,18 @@
   # SPI0 master + SPI-NOR probe (read-only): toward EDK2-owned flash + NV vars.
   INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiSpiDxe/SunxiSpiDxe.inf
 
-  # PCIe / NVMe: state-replay of BSP-U-Boot-enumerated NVMe controller
-  # TEMP-DISABLED (baseline bring-up): SunxiPcieDxe hangs in its entry on the
-  # locked PCIe DBI @0x06000000 (6x MmioRead32 before first DEBUG, no AXI
-  # response -> CPU stall) which bricks the boot before Shell. Re-enable once
-  # the DBI block is clocked/unlocked. See UART baseline 2026-06-02.
-  # INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiPcieDxe/SunxiPcieDxe.inf
+  # PCIe / NVMe: SunxiPcieDxe brings the root complex up from cold.
+  #
+  # This was disabled for a long time because the old driver stalled the CPU on
+  # 6x MmioRead32 of the DBI window before its first DEBUG(). That note asked to
+  # re-enable "once the DBI block is clocked", which is exactly what the rewrite
+  # does: the DBI was never locked, it was unclocked, and the driver now runs
+  # the CCU gates, resets and the Cadence combo PHY before touching it.
+  #
+  # The entry point returns EFI_SUCCESS even when the link fails to train, so a
+  # PCIe problem cannot stop the rest of the firmware from booting, and every
+  # step prints before it runs so a hang is attributable from the UART log.
+  INF  Platform/OrangePi/OrangePi4ProPkg/Drivers/SunxiPcieDxe/SunxiPcieDxe.inf
   INF  MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
 
   # Display: SimpleFB GOP (passes BSP-programmed framebuffer through to UEFI)
