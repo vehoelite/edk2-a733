@@ -57,6 +57,16 @@
 #define   PCIE_PWRUP_RST              BIT16         // RST_BUS_PCIE0_PWRUP
 #define CCU_SERDES_PHY_CFG_CLK        0x13C0        // CLK_SERDES_PHY_CFG
 #define   SERDES_PHY_CFG_GATE         BIT31
+//
+// SUNXI_CCU_M_WITH_MUX_GATE: M divider in bits 0-4, parent mux in bits 24-26,
+// gate at bit 31. Parents are { sys24M, pll-peri0-600m }. The vendor sets this
+// clock to 100 MHz, so pick the 600 MHz parent and divide by 6. Setting only
+// the gate leaves it on the 24 MHz reset default.
+//
+#define   SERDES_PHY_CFG_M_MASK       0x0000001FU
+#define   SERDES_PHY_CFG_MUX_MASK     (0x7U << 24)
+#define   SERDES_PHY_CFG_MUX_PERI600  (0x1U << 24)
+#define   SERDES_PHY_CFG_M_DIV6       (6U - 1U)
 #define CCU_SERDES_BGR                0x13C4
 #define   SERDES_RST                  BIT16         // RST_BUS_SERDES
 
@@ -106,6 +116,16 @@
 #define   APP_LTSSM_CTRL              0xC00
 #define     APP_LINK_TRAINING         BIT0
 #define     APP_DEVICE_TYPE_RC        BIT6
+#define   APP_PHY_CFG                 0x800   // golden value under Linux: 0x00a023f0
+//
+// Reading this register on the running board with the link up under Linux gives
+// 0x00a023f0, while ours settles at 0x008023f0. The only difference is bit 21.
+// The vendor U-Boot never writes this register, so the Linux BSP sets it, and
+// the header lists SYS_CLK / PAD_CLK immediately below PCIE_PHY_CFG, which
+// suggests a reference clock source select. A wrong refclk fits the symptom
+// exactly: the physical layer trains but the data link never completes.
+//
+#define     APP_PHY_CFG_BIT21           BIT21
 #define   APP_LINK_STAT               0xE0C
 #define     APP_SMLH_LINK_UP          BIT0
 #define     APP_RDLH_LINK_UP          BIT1
@@ -365,9 +385,47 @@ A733PcieClockInit (
   VOID
   )
 {
+  //
+  // Assert every reset before releasing it.
+  //
+  // Every test of this driver so far has been a WARM reboot out of a running
+  // Linux that already had PCIe up, so the core was already out of reset and
+  // holding whatever state Linux left behind. Merely OR-ing the release bits
+  // is then a no-op and the data link engine never restarts, which matches the
+  // symptom: the PHY re-inits, the physical layer trains (SMLH), but RDLH
+  // never comes up. The vendor U-Boot only ever runs from cold, so it never
+  // had to do this.
+  //
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - asserting resets first\n"));
+  MmioAnd32 (
+    (UINTN)(A733_CCU_BASE + CCU_PCIE_BGR),
+    (UINT32)~(PCIE_RST | PCIE_PWRUP_RST)
+    );
+  MmioAnd32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_BGR), (UINT32)~SERDES_RST);
+  MmioAnd32 (
+    (UINTN)(A733_CCU_BASE + CCU_ITS_BGR),
+    (UINT32)~(ITS_PCIE0_RST | ITS_PCIE0_GATE)
+    );
+  MmioAnd32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AUX_CLK), (UINT32)~PCIE_AUX_GATE);
+  MmioAnd32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_AXI_SLV_CLK), (UINT32)~PCIE_AXI_SLV_GATE);
+  MicroSecondDelay (10000);
+
   DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - serdes reset and clock\n"));
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_BGR), SERDES_RST);
+  //
+  // Select the 600 MHz parent and divide by 6 for 100 MHz before ungating.
+  //
+  MmioAndThenOr32 (
+    (UINTN)(A733_CCU_BASE + CCU_SERDES_PHY_CFG_CLK),
+    ~(SERDES_PHY_CFG_M_MASK | SERDES_PHY_CFG_MUX_MASK),
+    SERDES_PHY_CFG_MUX_PERI600 | SERDES_PHY_CFG_M_DIV6
+    );
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_PHY_CFG_CLK), SERDES_PHY_CFG_GATE);
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: serdes phy cfg clk = 0x%08x (want mux 1, M 5, gated)\n",
+    MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_SERDES_PHY_CFG_CLK))
+    ));
 
   DEBUG ((DEBUG_ERROR, "SunxiPcie: CCU - PCIe resets\n"));
   MmioOr32 ((UINTN)(A733_CCU_BASE + CCU_PCIE_BGR), PCIE_RST | PCIE_PWRUP_RST);
@@ -630,6 +688,16 @@ A733PcieStartLink (
   UINT32  Status;
   UINT32  Ltssm;
 
+  //
+  // Match the known-good PHY_CFG before training is enabled.
+  //
+  MmioOr32 ((UINTN)(A733_PCIE_APP_BASE + APP_PHY_CFG), APP_PHY_CFG_BIT21);
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: PHY_CFG now 0x%08x (target 0x00a023f0)\n",
+    MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_PHY_CFG))
+    ));
+
   Ltssm = MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_LTSSM_CTRL));
   DEBUG ((DEBUG_ERROR, "SunxiPcie: LTSSM_CTRL before = 0x%08x\n", Ltssm));
 
@@ -647,6 +715,17 @@ A733PcieStartLink (
         Elapsed, Status
         ));
       return EFI_SUCCESS;
+    }
+
+    if ((Elapsed % 100000) == 0) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "SunxiPcie:   t=%6u us LINK_STAT=0x%08x LTSSM=0x%08x PHY_CFG=0x%08x\n",
+        Elapsed,
+        Status,
+        MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_LTSSM_CTRL)),
+        MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_PHY_CFG))
+        ));
     }
 
     MicroSecondDelay (LINK_POLL_INTERVAL_US);
@@ -736,6 +815,12 @@ SunxiPcieDxeEntry (
   PioDriveOutput (PortD, PIN_PERST, TRUE);
   MicroSecondDelay (100000);
   DEBUG ((DEBUG_ERROR, "SunxiPcie: PERST# released\n"));
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: BEFORE training: LINK_STAT=0x%08x PHY_CFG=0x%08x (linux golden PHY_CFG=0x00a023f0)\n",
+    MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_LINK_STAT)),
+    MmioRead32 ((UINTN)(A733_PCIE_APP_BASE + APP_PHY_CFG))
+    ));
 
   //
   // DBI is answerable from here on, because the clocks and the PHY are up.
