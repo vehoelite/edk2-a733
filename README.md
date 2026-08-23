@@ -75,10 +75,146 @@ GOP driver that takes ownership of the DE3.0 mixer0 scanout pipeline.
 | **DTB → kernel hand-off** | ✅  | **via GRUB's `devicetree` + `linux` on a USB stick (native EDK2 path still TODO)** |
 | USB-A left bottom (EHCI0) | ⚠️  | PHY up + registered (UTMI_STAT=0x08, PORTSC=0x3000); jack physical wiring TBD |
 | USB-A left top (xHCI 3.0) | ❌  | DWC3 wrapper alive but xHCI MMIO dead — needs Cadence Combo PHY init at `0x06C00000` |
-| **PCIe / NVMe (under Linux)** | ✅ | **the booted kernel brings up the Cadence Combo PHY @`0x06C00000` → PCIe → NVMe (`nvme0n1`); v0.4 roots Ubuntu on it.** In *EDK2 itself* `SunxiPcieDxe` is still disabled (DBI @`0x06000000` hang) — EDK2-side NVMe is future work |
+| **PCIe / NVMe (in EDK2)** | ✅ | **`SunxiPcieDxe` brings the root complex up from cold: link trains, iATU programmed, endpoint answers `15B7:5045`, NVMe registered and listed in the Boot Manager by model + serial. Gen1 x1 — Gen3 needs the equalisation sequence** |
+| **PCIe / NVMe (under Linux)** | ✅ | the booted kernel re-initialises PCIe itself and roots Ubuntu on `nvme0n1` |
+| **Boot logo**           | ✅    | `OrangePiLogoDxe`, 1024×600 published via HII, drawn by `BootLogoLib` |
+| **UEFI Setup (Front Page)** | ✅ | Device Manager + Boot Manager + Boot Maintenance Manager, SMBIOS-populated |
 | Variable runtime        | ❌    | no SPI NOR variable backend yet (see `## SPI NOR` notes)       |
 | ACPI                    | ❌    | no DSDT generator yet                                          |
 | Stock-kernel A733 drivers | 🚧  | mainline lacks MMC/PCIe/USB drivers for `sun60iw2`; v2 campaign mapped in [V2-DRIVER-PORTING-RECON.md](V2-DRIVER-PORTING-RECON.md) |
+
+### Visual proof — v0.5 (NVMe, from EDK2's own stack)
+
+Photographs of the board's own panel. Nothing here is a mock-up or a serial
+capture dressed up as a screen: this is the LCD, driven by our GOP, on an SoC
+whose vendor ships no UEFI at all.
+
+#### The firmware announces itself
+
+![Firmware banner](docs/images/edk2_post_boot.jpg)
+
+```
+Orange Pi 4 Pro UEFI  (Allwinner A733, ARMv8.2-A)
+Firmware: v0.2-NVMe build #46
+Vendor:   Orange Pi 4 Pro EDK2 Port (beg0fthend)
+
+ESC / F2  -  Setup
+F11 / F7  -  Boot Menu
+```
+
+#### Boot logo
+
+![Boot logo](docs/images/edk2_boot1.jpg)
+
+1024×600, matching the panel exactly, published through HII and drawn by
+`BootLogoLib`. Artwork by Jacob. Note the key hints match what
+`PlatformBootManagerLib` actually binds, which is worth checking whenever the
+artwork changes.
+
+#### Setup — a real Front Page, populated from SMBIOS
+
+![UEFI Setup Front Page](docs/images/edk2_main_menu.jpg)
+
+```
+Orange Pi 4 Pro
+Allwinner A733 (4x A76 + 4x A55)          1.80 GHz
+v0.2-NVMe build #46                       6144 MB RAM
+
+  Select Language        <Standard English>
+  > Device Manager
+  > Boot Manager
+  > Boot Maintenance Manager
+    Continue
+    Reset
+```
+
+The CPU topology and memory size come from `SunxiSmbiosDxe`, so this is the
+firmware describing real hardware rather than a hard-coded string. All three
+standard sub-menus are present.
+
+#### Boot Manager — the drive, by model and serial
+
+![Boot Manager](docs/images/edk2_boot_manager.jpg)
+
+```
+Debian (native EDK2 hand-off)
+UEFI Misc Device
+UEFI Sandisk Optimus GX 7100 500GB 261331807235 1
+UEFI OS on Disk
+UEFI OS on NVMe
+UEFI Shell
+```
+
+This is the single strongest piece of evidence in the repository. The NVMe
+drive is listed **by model and by its actual serial number**, which means the
+firmware completed a PCIe link, translated config cycles through the iATU, ran
+NVMe Identify over DMA, and read the controller's own strings back. `UEFI OS on
+NVMe` is a file-level boot option pointing at `\EFI\BOOT\BOOTAA64.EFI` on the
+drive's GPT partition 2 — not a device stub.
+
+#### Both EFI system partitions mounted
+
+![File Explorer](docs/images/edk2_boot_entries.jpg)
+
+```
+EDK2ESP,  [VenHw(7B9C3E1A-...)/HD(2,MBR,0x094CBB19,0x3B058000,0x990000)]
+ESP,      [VenHw(0D51905B-...)/NVMe(0x1,E8-D8-8D-43-8B-44-1B-00)
+                              /HD(2,GPT,1BBFC0F6-...,0x7BD000,0x3000)]
+```
+
+The SD card's ESP (MBR) and the NVMe's ESP (GPT) are both mounted, with the
+NVMe namespace and its GPT partition GUID visible in the device path. Full
+stack: PCIe link → iATU → NVMe → BlockIo → PartitionDxe → FAT.
+
+#### A stock, signed distro bootloader
+
+![GRUB from NVMe](docs/images/edk2_grub.jpg)
+
+`GNU GRUB version 2.14`, loaded via Ubuntu's shim from the NVMe drive. Entirely
+unmodified distro code. `UEFI Firmware Settings` appears in GRUB's own menu,
+which means GRUB detected a real UEFI implementation exposing `OsIndications`.
+
+#### Hand-off to the kernel
+
+![EFI stub hand-off](docs/images/edk2_boot2.jpg)
+
+```
+BootDebian: FDT installed @ 0x1B9E2F000 (214905 bytes)
+BootDebian: initrd registered (14590915 bytes) via LoadFile2
+BootDebian: starting kernel (cmdline: root=UUID=51bbd498-... rootwait
+            rootfstype=ext4 console=ttyS7,115200
+            earlycon=uart8250,mmio32,0x07080000 keep_bootcon loglevel=7)
+EFI stub: Booting Linux Kernel...
+EFI stub: Using DTB from configuration table
+EFI stub: Loaded initrd from LINUX_EFI_INITRD_MEDIA_GUID device path
+EFI stub: Exiting boot services...
+```
+
+The kernel's own EFI stub confirming it took the device tree from our
+configuration table and the initrd from the standard Linux initrd media device
+path. This is the architectural hand-off working exactly as specified, not a
+board-specific hack.
+
+#### A stock Ubuntu kernel running
+
+![Ubuntu booting](docs/images/edk2_ubuntu.jpg)
+
+Ubuntu 26.04's own kernel and plymouth, booted from NVMe through our firmware.
+
+**Where this stops, and why it is not a firmware problem.** The stock kernel
+reaches userspace and then reports `Unable to find a medium containing a live
+file system`, because mainline Linux has no `sunxi-pcie` driver and therefore
+cannot see the drive it just booted from. The firmware's job finishes at the
+hand-off; a usable system needs the BSP kernel, which is the ordinary SBC
+recipe of a stock rootfs plus a vendor kernel package.
+
+#### Known inconsistency
+
+The on-screen build string reads `v0.2-NVMe build #46` while this document
+describes v0.4/v0.5 milestones, because `PcdFirmwareVersionString` has not been
+bumped alongside the work. Worth fixing before builds go to anyone else: a
+version string that does not identify the build makes tester reports much
+harder to act on.
 
 ### Visual proof — v0.2
 
@@ -603,25 +739,83 @@ contributor can do *register-state replay* without rediscovery:
 - [`research/sun60iw2-iomem.txt`](research/sun60iw2-iomem.txt)
 - [`research/dump_regs.sh`](research/dump_regs.sh) — the `/dev/mem` capture script
 
-### Wall 2 — PCIe / NVMe
+### Wall 2 — PCIe / NVMe ✅ DOWN
 
-- The PCIe controller is DesignWare. The DBI register window at
-  `0x06000000` reads back as **all `0xFF`** from a running BSP
-  kernel — meaning DBI access is gated by an Allwinner-specific
-  unlock register (likely in CCU or a SYS_CTRL block). Without it, no
-  driver can program the iATU or read root-port config space.
-- The NVMe BAR0 at `0x22100000` *does* respond (`0x0a013FFF` = valid
-  NVMe `CAP`), so the link IS up and BSP U-Boot already enumerated and
-  assigned BARs. We just can't *enumerate again* from EDK2 because
-  `PciHostBridgeDxe` needs config-space cycles and config space is
-  locked.
-- Snapshot: [`research/sun60iw2-pcie-dbi-snapshot.txt`](research/sun60iw2-pcie-dbi-snapshot.txt)
+EDK2 now brings the root complex up from cold and boots from the drive. Three
+things had to be understood, and two earlier conclusions in this document were
+simply wrong.
 
-### Wall 3 — Ethernet
+**"DBI is locked" was wrong — it was unclocked, and then mis-read.** The
+earlier snapshot showing the DBI window as all `0xFF` led to a theory about an
+Allwinner-specific unlock register. There is no such register. Two separate
+mistakes produced that reading:
 
-- Same shape as USB pre-v0.2: BSP-only CCU clock IDs, BSP-only PHY init.
-  Now that the CCU + PHY pattern is broken (see `SunxiUsbDxe.c`), this
-  is the obvious next target.
+1. The first driver read DBI before any clock was running. An unclocked block
+   is not a locked block.
+2. **The DBI window rejects wide accesses.** A 16-byte read returns all-ones
+   while 32-bit reads at the *same addresses* return real data. The dump script
+   used 16-byte reads, so it manufactured the very evidence the theory rested
+   on. Always read DBI 32 bits at a time.
+
+With clocks up and 32-bit reads, DBI answers `0xABCD1F6D` immediately.
+
+**The link trained but the data link layer never came up.** `smlh_link_up`
+asserted, `rdlh_link_up` never did. The LTSSM sat in L0 for 98.6% of 200 000
+samples with zero AER errors in either direction, yet flow-control credits
+stayed at zero. The cause was the Gen3 speed change: the core retried a
+negotiation that never completed, and each retry disturbed the link before
+flow-control initialisation could finish. Targeting Gen1 skips that path and
+`rdlh_link_up` asserts. This is the same *class* of failure as the known A733
+BSP Gen3 speed-change bug, though not the same instance — the BSP brings this
+WD drive up at Gen3 quite happily.
+
+**No address translation was programmed at all.** Without outbound iATU
+regions, config and memory cycles go nowhere no matter how healthy the link is.
+Two regions, with apertures taken from the working Linux boot:
+
+```
+region 0  CFG0  cpu 0x22200000 size 0x10000  -> pci 0x01000000 (bus 1)
+region 1  MEM   cpu 0x22100000 size 0x100000 -> pci 0x22100000 (identity)
+```
+
+After which the endpoint answers `vendor 0x15B7 device 0x5045 class 0x010802` —
+Sandisk, WD_BLACK SN7100, NVM Express.
+
+**Enumeration without a PCI stack.** There is no `PciHostBridge` or
+`PciBusDxe` here, and config access is not flat ECAM (bus 0 is the root port
+inside the DBI window; bus 1 is reached through the CFG0 region), so a generic
+stack would need a custom `PciSegmentLib`. For a single point-to-point endpoint
+that is not worth it: the BAR is programmed by hand and the controller is
+registered with `RegisterNonDiscoverableMmioDevice`, the same idiom
+`SunxiUsbDxe` already uses for EHCI. `NvmExpressDxe` then binds normally.
+
+Remaining: Gen3 needs the equalisation sequence doing properly rather than a
+target-speed write.
+
+### Wall 3 — Ethernet ⚠️ OPEN — and we cause it
+
+Ethernet works on a plain vendor boot and dies after a boot through EDK2. This
+is a regression in our firmware, not a missing driver, and it is the most
+tester-visible bug currently open.
+
+One real bug has been found and fixed along the way: the MBUS and AHB matrix
+clock-gating registers were being written by OR-ing a "key" constant whose low
+bits land on real master gate bits, switching on six bus masters the vendor
+leaves gated. Both registers now match the vendor exactly
+(`0xb10103f8` / `0xf0050803`). **That did not fix the network**, so it was a
+genuine bug but not this one.
+
+Method in use, since it is more useful than the result so far: the board
+records its own register state at every boot and diffs against a golden copy
+taken from a working vendor boot. The state we need is one where networking is
+dead, so the diff has to be written to disk rather than fetched. An early
+version of this sampled at `multi-user.target`, before the link had finished
+negotiating, and produced differences that had nothing to do with EDK2 — worth
+knowing, because those readings looked convincing.
+
+Tooling: `dumpnet.py` (capture and diff), a boot-time systemd unit that records
+each boot, and `serialcmd.ps1` for driving the board over the UART when the
+network is gone.
 
 ---
 
@@ -706,16 +900,46 @@ grafted at `b03a21a`; this repo only contains the platform overlay.
 - [ ] **Retire the vendor-DTB DE/DRM workaround** — the *vendor* kernel
       path still disables the DE/DRM in the DTB rather than inheriting the
       GOP framebuffer; only the mainline path is confirmed clean
-- [ ] **Re-enable `SunxiPcieDxe` / DesignWare PCIe + NVMe** — find the
-      DBI unlock @`0x06000000`; BSP Linux enumerates the NVMe, so the
-      init sequence is replicable rather than blind
+- [x] **`SunxiPcieDxe` / DesignWare PCIe + NVMe** — done. Root complex up
+      from cold, iATU programmed, drive listed in the Boot Manager by
+      model and serial, and a stock Ubuntu image boots from it. There was
+      no "DBI unlock": the block was unclocked, and the snapshot that
+      suggested otherwise was taken with 16-byte reads, which that window
+      rejects. See *Wall 2*.
+- [ ] **PCIe Gen3** — currently pinned to Gen1 because the Gen3 speed
+      change never completes and its retries starve flow-control init.
+      Needs the equalisation sequence done properly. Gen1 x1 is roughly
+      250 MB/s against a theoretical 985 MB/s.
 - [ ] **Fix EHCI0** (left-bottom USB-A) — share-PHY-with-OTG ordering
       quirk; `OTG+0x420 &= ~BIT0` already done but probably needs to
       happen before the PHY reset assert/deassert
 - [ ] **xHCI (left-top USB-A, USB 3.0)** — Cadence Combo PHY at
       `0x06C00000`/`0x06C06000` + DWC3 controller stack
-- [ ] **Ethernet** — apply the same CCU + PHY pattern from `SunxiUsbDxe`
-- [ ] **Real `Variable` runtime services** backed by SPI NOR
+- [ ] **Ethernet regression** — ethernet works on a plain vendor boot and
+      dies after an EDK2 boot. Ours to fix, and the most tester-visible
+      bug open. See *Wall 3* for the diff-based method and what has
+      already been ruled out.
+- [ ] **Real `Variable` runtime services** backed by SPI NOR — the
+      keystone. `PcdEmuVariableNvModeEnable` is `TRUE`, so the variable
+      store is RAM-backed and every boot option set in Setup is lost on
+      reboot. Sequence: SPI NOR FVB driver → `FaultTolerantWriteDxe` →
+      `VariableRuntimeDxe` + a real `AuthVariableLib`. This one blocks
+      three separate features: persistent boot entries, Secure Boot, and
+      any firmware auto-updater.
+- [ ] **Secure Boot** — strictly after the above. `AuthVariableLib` is
+      currently the Null instance, so there are no authenticated variables
+      at all; Secure Boot layered on a volatile store is non-functional by
+      the spec, not merely weak.
+- [ ] **OHCI driver** — EDK2 ships no OHCI bus driver, so full-speed USB
+      keyboards do not enumerate in Setup and only the two EHCI ports
+      work. `QuarkSocPkg/QuarkSouthCluster/Usb/Ohci/Dxe` in edk2-platforms
+      is a real OHCI HC driver and is the sane starting point. Interim
+      workaround for testers: use one of the two working USB ports, or a
+      USB 2.0 hub, whose transaction translator lets EHCI carry a
+      full-speed device.
+- [ ] **Bump `PcdFirmwareVersionString`** — it still reads
+      `v0.2-NVMe build #46` on screen. A version string that does not
+      identify the build makes tester reports much harder to act on.
 - [ ] **Replace BSP `BL33` slot in SPI with EDK2 directly**
       (eliminates U-Boot from the chain)
 - [ ] **ACPI table generator** for the A733 (so generic distros boot)
