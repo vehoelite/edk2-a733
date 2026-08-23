@@ -25,6 +25,7 @@
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/SimpleFileSystem.h>
+#include <Library/BaseLib.h>
 #include <Guid/SerialPortLibVendor.h>
 #include <Guid/GlobalVariable.h>
 #include <Guid/EventGroup.h>
@@ -241,6 +242,140 @@ RegisterFvBootOption (
   return EFI_NOT_FOUND;
 }
 
+/**
+  Create a boot option for every filesystem that actually carries the UEFI
+  removable-media boot file.
+
+  EfiBootManagerRefreshAllBootOption did not do this for us. On this platform
+  it produced a device level option for the NVMe controller with no file path
+  on it, and nothing at all for the EFI system partitions, even with two
+  filesystems mounted and Fat bound to both. Rather than keep guessing at the
+  generic enumeration policy, this looks for the file the UEFI spec says to
+  look for and registers what it finds.
+
+  The file is the architectural default removable media path for AArch64,
+  which is what a stock distro image ships: an Ubuntu or Debian ISO written to
+  a disk has its shim sitting exactly there.
+**/
+STATIC
+VOID
+RegisterEspBootOptions (
+  VOID
+  )
+{
+  EFI_STATUS                       Status;
+  EFI_HANDLE                       *Handles;
+  UINTN                            HandleCount;
+  UINTN                            Index;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+  EFI_DEVICE_PATH_PROTOCOL         *FullDp;
+  EFI_BOOT_MANAGER_LOAD_OPTION     Option;
+  CHAR16                           *DpStr;
+  CHAR16                           *Description;
+  UINTN                            Registered;
+
+  Handles     = NULL;
+  HandleCount = 0;
+  Registered  = 0;
+
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiSimpleFileSystemProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status) || (Handles == NULL)) {
+    DEBUG ((DEBUG_ERROR, "PlatformBds: no filesystems to scan for boot files\n"));
+    return;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiSimpleFileSystemProtocolGuid,
+                    (VOID **)&Fs
+                    );
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    Root = NULL;
+    Status = Fs->OpenVolume (Fs, &Root);
+    if (EFI_ERROR (Status) || (Root == NULL)) {
+      continue;
+    }
+
+    File   = NULL;
+    Status = Root->Open (Root, &File, EFI_REMOVABLE_MEDIA_FILE_NAME, EFI_FILE_MODE_READ, 0);
+    if (!EFI_ERROR (Status) && (File != NULL)) {
+      File->Close (File);
+
+      //
+      // Name it after the device it lives on, so the boot menu is readable
+      // when there is more than one disk in the machine.
+      //
+      DpStr = ConvertDevicePathToText (DevicePathFromHandle (Handles[Index]), FALSE, FALSE);
+      if ((DpStr != NULL) && (StrStr (DpStr, L"NVMe") != NULL)) {
+        Description = L"UEFI OS on NVMe";
+      } else if ((DpStr != NULL) && (StrStr (DpStr, L"eMMC") != NULL)) {
+        Description = L"UEFI OS on eMMC";
+      } else {
+        Description = L"UEFI OS on Disk";
+      }
+
+      DEBUG ((
+        DEBUG_ERROR,
+        "PlatformBds: found %s on %s\n",
+        EFI_REMOVABLE_MEDIA_FILE_NAME,
+        (DpStr != NULL) ? DpStr : L"<unknown>"
+        ));
+
+      FullDp = FileDevicePath (Handles[Index], EFI_REMOVABLE_MEDIA_FILE_NAME);
+      if (FullDp != NULL) {
+        Status = EfiBootManagerInitializeLoadOption (
+                   &Option,
+                   LoadOptionNumberUnassigned,
+                   LoadOptionTypeBoot,
+                   LOAD_OPTION_ACTIVE,
+                   Description,
+                   FullDp,
+                   NULL,
+                   0
+                   );
+        if (!EFI_ERROR (Status)) {
+          //
+          // Appended rather than inserted at the front: the existing Debian
+          // hand-off stays the default, so a bad disk cannot make the board
+          // unbootable. Pick this from the F7/F11 menu, or move it up in
+          // BootOrder once it is trusted.
+          //
+          EfiBootManagerAddLoadOptionVariable (&Option, (UINTN)-1);
+          EfiBootManagerFreeLoadOption (&Option);
+          Registered++;
+        }
+        FreePool (FullDp);
+      }
+
+      if (DpStr != NULL) {
+        FreePool (DpStr);
+      }
+    }
+
+    Root->Close (Root);
+  }
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "PlatformBds: registered %u filesystem boot option(s)\n",
+    (UINT32)Registered
+    ));
+
+  FreePool (Handles);
+}
+
 STATIC
 VOID
 DumpBootOptions (
@@ -447,6 +582,8 @@ PlatformBootManagerAfterConsole (
   }
 
   EfiBootManagerRefreshAllBootOption ();
+
+  RegisterEspBootOptions ();
 
   //
   // Always keep the embedded UEFI Shell available as a recovery option.
