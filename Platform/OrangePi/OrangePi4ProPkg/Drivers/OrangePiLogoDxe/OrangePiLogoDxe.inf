@@ -1,0 +1,48 @@
+## @file
+#  Boot logo for the Orange Pi 4 Pro.
+#
+#  A platform-local copy of the MdeModulePkg logo driver, so that the artwork
+#  can be replaced without modifying the edk2 core tree. Only the bitmap and
+#  the module identity differ; Logo.c is unchanged.
+#
+#  The bitmap is 1024x600, matching PcdSunxiFramebufferWidth and
+#  PcdSunxiFramebufferHeight exactly, and is a 24 bit uncompressed Windows
+#  bitmap. BootLogoLib centres the image on a cleared screen, so a black
+#  background blends into the surround rather than showing as a box.
+#
+#  Copyright (c) 2026, carpi-os contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = OrangePiLogoDxe
+  FILE_GUID                      = 3D9A1C42-6E58-4B7D-9F2A-8C4E1B05D7A3
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = InitializeLogo
+  UEFI_HII_RESOURCE_SECTION      = TRUE
+
+[Sources]
+  Logo.bmp
+  Logo.c
+  Logo.idf
+
+[Packages]
+  MdeModulePkg/MdeModulePkg.dec
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  DebugLib
+
+[Protocols]
+  gEfiHiiDatabaseProtocolGuid        ## CONSUMES
+  gEfiHiiImageExProtocolGuid         ## CONSUMES
+  gEfiHiiPackageListProtocolGuid     ## PRODUCES CONSUMES
+  gEdkiiPlatformLogoProtocolGuid     ## PRODUCES
+
+[Depex]
+  gEfiHiiDatabaseProtocolGuid AND
+  gEfiHiiImageExProtocolGuid

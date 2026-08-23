@@ -1,0 +1,10 @@
+// /** @file
+// Platform logo image definition.
+//
+// Copyright (c) 2026, carpi-os contributors.
+//
+// SPDX-License-Identifier: BSD-2-Clause-Patent
+//
+// **/
+
+#image IMG_LOGO Logo.bmp
