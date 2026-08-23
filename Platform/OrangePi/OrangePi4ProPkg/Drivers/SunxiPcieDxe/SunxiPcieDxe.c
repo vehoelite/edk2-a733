@@ -96,6 +96,25 @@
 #define CCU_AHB_MAT_CLK_GATING        0x05C0
 #define   AHB_MASTER_KEY_VALUE        0x010000FF
 #define   AHB_SERDES_GATE             BIT8
+//
+// The "key" constants above are OR-ed into these registers, and their low bits
+// land on real master gate bits rather than on any key field. Measured against
+// a Linux boot that did not go through EDK2:
+//
+//     AHB_MAT_CLK_GATING   linux 0xb10103f8   ours 0xb10103ff   extra 0,1,2
+//     MBUS_MAT_CLK_GATING  linux 0xf0050803   ours 0xf1055803   extra 12,14,24
+//
+// So we were switching on six bus masters the vendor leaves gated, and the
+// state persisted into Linux because nothing turns them back off. That is the
+// cause of the ethernet failing after an EDK2 boot but not after a plain
+// vendor boot -- the GMAC sits behind these matrices.
+//
+// Every other PCIe clock and reset register already matches Linux exactly, so
+// the keyed write itself is fine and is left alone. These masks just put the
+// strays back the way the vendor has them.
+//
+#define   AHB_MASTER_STRAY_BITS       0x00000007U
+#define   MBUS_MASTER_STRAY_BITS      0x01005000U
 #define CCU_SERDES_BGR                0x13C4
 #define   SERDES_RST                  BIT16         // RST_BUS_SERDES
 
@@ -597,9 +616,23 @@ A733PcieClockInit (
     (UINTN)(A733_CCU_BASE + CCU_MBUS_MAT_CLK_GATING),
     MBUS_MASTER_KEY_VALUE | MBUS_SERDES_GATE
     );
+
+  //
+  // Put back the master gates the keyed writes turned on by accident. Target
+  // is the vendor's own state: AHB 0xb10103f8, MBUS 0xf0050803.
+  //
+  MmioAnd32 (
+    (UINTN)(A733_CCU_BASE + CCU_AHB_MAT_CLK_GATING),
+    (UINT32)~AHB_MASTER_STRAY_BITS
+    );
+  MmioAnd32 (
+    (UINTN)(A733_CCU_BASE + CCU_MBUS_MAT_CLK_GATING),
+    (UINT32)~MBUS_MASTER_STRAY_BITS
+    );
+
   DEBUG ((
     DEBUG_ERROR,
-    "SunxiPcie: AHB gate 0x%08x, MBUS gate 0x%08x\n",
+    "SunxiPcie: AHB gate 0x%08x, MBUS gate 0x%08x (linux 0xb10103f8 0xf0050803)\n",
     MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_AHB_MAT_CLK_GATING)),
     MmioRead32 ((UINTN)(A733_CCU_BASE + CCU_MBUS_MAT_CLK_GATING))
     ));

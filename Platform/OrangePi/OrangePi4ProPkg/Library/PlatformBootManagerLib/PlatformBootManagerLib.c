@@ -24,6 +24,7 @@
 #include <Protocol/FirmwareVolume2.h>
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/BlockIo.h>
+#include <Protocol/SimpleFileSystem.h>
 #include <Guid/SerialPortLibVendor.h>
 #include <Guid/GlobalVariable.h>
 #include <Guid/EventGroup.h>
@@ -358,34 +359,90 @@ PlatformBootManagerAfterConsole (
   // during the first pass. This matters for USB mass storage for the same
   // reason, so it is not NVMe specific.
   //
+  //
+  // Repeat until the block device count stops growing.
+  //
+  // One pass is not enough. Connecting the disks makes PartitionDxe create
+  // partition children, and those children are themselves new BlockIo handles
+  // that nobody has connected yet, so Fat never binds to the EFI system
+  // partition and no bootable filesystem appears. The first pass found the
+  // NVMe namespace and gave us partitions; it took a second pass to get a
+  // filesystem on them. Looping is simpler than reasoning about how deep the
+  // stack happens to be, and it settles after two or three rounds.
+  //
   {
     EFI_STATUS  ConnectStatus;
     EFI_HANDLE  *BlockIoHandles;
     UINTN       BlockIoCount;
     UINTN       BlockIoIndex;
+    UINTN       PreviousCount;
+    UINTN       Round;
 
-    BlockIoHandles = NULL;
-    BlockIoCount   = 0;
+    PreviousCount = 0;
 
-    ConnectStatus = gBS->LocateHandleBuffer (
-                           ByProtocol,
-                           &gEfiBlockIoProtocolGuid,
-                           NULL,
-                           &BlockIoCount,
-                           &BlockIoHandles
-                           );
-    if (!EFI_ERROR (ConnectStatus) && (BlockIoHandles != NULL)) {
+    for (Round = 0; Round < 4; Round++) {
+      BlockIoHandles = NULL;
+      BlockIoCount   = 0;
+
+      ConnectStatus = gBS->LocateHandleBuffer (
+                             ByProtocol,
+                             &gEfiBlockIoProtocolGuid,
+                             NULL,
+                             &BlockIoCount,
+                             &BlockIoHandles
+                             );
+      if (EFI_ERROR (ConnectStatus) || (BlockIoHandles == NULL)) {
+        DEBUG ((DEBUG_ERROR, "PlatformBds: no block devices to reconnect\n"));
+        break;
+      }
+
       DEBUG ((
         DEBUG_ERROR,
-        "PlatformBds: reconnecting %u block device(s)\n",
+        "PlatformBds: connect round %u, %u block device(s)\n",
+        (UINT32)Round,
         (UINT32)BlockIoCount
         ));
+
       for (BlockIoIndex = 0; BlockIoIndex < BlockIoCount; BlockIoIndex++) {
         gBS->ConnectController (BlockIoHandles[BlockIoIndex], NULL, NULL, TRUE);
       }
+
       FreePool (BlockIoHandles);
-    } else {
-      DEBUG ((DEBUG_ERROR, "PlatformBds: no block devices to reconnect\n"));
+
+      if (BlockIoCount == PreviousCount) {
+        break;
+      }
+
+      PreviousCount = BlockIoCount;
+    }
+
+    //
+    // Report what actually ended up with a filesystem on it, which is the thing
+    // that decides whether anything is bootable.
+    //
+    {
+      EFI_HANDLE  *FsHandles;
+      UINTN       FsCount;
+
+      FsHandles = NULL;
+      FsCount   = 0;
+
+      if (!EFI_ERROR (gBS->LocateHandleBuffer (
+                             ByProtocol,
+                             &gEfiSimpleFileSystemProtocolGuid,
+                             NULL,
+                             &FsCount,
+                             &FsHandles
+                             ))) {
+        DEBUG ((
+          DEBUG_ERROR,
+          "PlatformBds: %u filesystem(s) present\n",
+          (UINT32)FsCount
+          ));
+        if (FsHandles != NULL) {
+          FreePool (FsHandles);
+        }
+      }
     }
   }
 
