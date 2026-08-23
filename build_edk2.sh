@@ -3,7 +3,7 @@
 # Usage: ./build_edk2.sh [--deploy]
 set -eo pipefail   # NOTE: no -u — edksetup.sh references unset vars
 
-BOARD_IP="192.168.0.207"
+BOARD_IP="192.168.0.201"
 BOARD_USER="orangepi"
 BOARD_PASS="orangepi"
 FD="Build/OrangePi4Pro/DEBUG_GCC/FV/ORANGEPI4PRO_EFI.fd"

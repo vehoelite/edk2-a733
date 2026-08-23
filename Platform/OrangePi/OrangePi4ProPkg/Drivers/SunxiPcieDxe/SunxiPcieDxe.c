@@ -166,6 +166,28 @@
 // run showed.
 //
 #define   DBI_PORT_LINK_CONTROL           0x710
+#define   DBI_FILTER_MASK_1               0x71C
+#define   DBI_FILTER_MASK_2               0x720
+//
+// VC0 receive queue control. These hold the credit values the core ADVERTISES
+// in its InitFC1 DLLPs, and they are sampled during flow control
+// initialisation only -- writing them after the link is up does nothing
+// without a retrain. We never programmed them at all, so whatever the reset
+// state is, that is what the endpoint was being offered. If those values are
+// illegal the endpoint stalls in its own DL_Init and never sends InitFC2
+// back, which is exactly the signature we have: L0 stable, zero AER errors in
+// both directions, TX credits stuck at zero, DLLLA never set.
+//
+// The values below are read back from the working vendor BSP boot on this
+// same board with this same drive, where LNKSTA reads 0xf013 (Gen3 x1, DLLLA
+// set) and the TX credit registers are non-zero.
+//
+#define   DBI_VC0_P_RX_Q_CTRL             0x748
+#define     VC0_P_RX_Q_GOLDEN             0x4523E060
+#define   DBI_VC0_NP_RX_Q_CTRL            0x74C
+#define     VC0_NP_RX_Q_GOLDEN            0x0523E00F
+#define   DBI_VC0_CPL_RX_Q_CTRL           0x750
+#define     VC0_CPL_RX_Q_GOLDEN           0x05800000
 #define     PORT_LINK_MODE_MASK           (0x3FU << 16)
 #define     PORT_LINK_MODE_1_LANE         (0x01U << 16)
 #define   DBI_LINK_WIDTH_SPEED_CTRL       0x80C
@@ -253,7 +275,27 @@
 #define       PCI_EXP_LNKCAP_SLS          0x0000000FU
 #define     PCI_EXP_LNKCTL2               48      // cap + 0x30
 #define       PCI_EXP_LNKCTL2_TLS         0x0000000FU
+#define     PCIE_LINK_SPEED_GEN1          0x1
 #define     PCIE_LINK_SPEED_GEN3          0x3
+//
+// Target link speed. Set to GEN1 deliberately as an experiment.
+//
+// The link currently reports LNKSTA speed Gen1 even though we advertise Gen3,
+// and the LTSSM histogram is full of Recovery.Lock / Recovery.RcvrCfg /
+// Recovery.Idle excursions -- which is exactly the path a Gen3 speed change
+// takes. The theory is that the core keeps retrying a speed change that never
+// succeeds, and each attempt disturbs the link before flow control
+// initialisation can finish, so credits stay at zero and DLLLA never sets.
+//
+// There is a known Gen3 speed-change/equalisation bug in the A733 BSP driver
+// that leaves DLActive clear on some drives (Phison E27T especially). That
+// exact bug is not ours -- Linux brings this WD drive up at Gen3 on this same
+// board, LNKSTA 0xf013 with DLLLA set -- but the same class of failure could
+// bite our less complete bring-up. Advertising Gen1 skips the speed-change
+// path entirely, so if RDLH asserts at Gen1 the whole class is confirmed and
+// the work becomes the equalisation sequence rather than flow control.
+//
+#define     PCIE_LINK_SPEED_TARGET        PCIE_LINK_SPEED_GEN1
 
 //
 // Root complex config, from the vendor setup_rc(). Not needed to train the
@@ -789,12 +831,12 @@ A733PcieSetLinkRate (
   if (Cap != 0) {
     Value  = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKCTL2));
     Value &= ~PCI_EXP_LNKCTL2_TLS;
-    Value |= PCIE_LINK_SPEED_GEN3;
+    Value |= PCIE_LINK_SPEED_TARGET;
     MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKCTL2), Value);
 
     Value  = MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKCAP));
     Value &= ~PCI_EXP_LNKCAP_SLS;
-    Value |= PCIE_LINK_SPEED_GEN3;
+    Value |= PCIE_LINK_SPEED_TARGET;
     MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + Cap + PCI_EXP_LNKCAP), Value);
   }
 
@@ -809,6 +851,39 @@ A733PcieSetLinkRate (
     ~PORT_LOGIC_LINK_WIDTH_MASK,
     PORT_LOGIC_LINK_WIDTH_1_LANE
     );
+
+  //
+  // Report what the advertised flow control credits currently are, then set
+  // them to the values the working BSP uses. Printed before and after so a
+  // boot log says whether the reset state was already correct -- if these
+  // read back the same as the golden values, this hypothesis is dead and the
+  // fault is elsewhere.
+  //
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: VC0 credits BEFORE  P=0x%08x NP=0x%08x CPL=0x%08x\n",
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_VC0_P_RX_Q_CTRL)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_VC0_NP_RX_Q_CTRL)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_VC0_CPL_RX_Q_CTRL))
+    ));
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: filter masks        F1=0x%08x F2=0x%08x (BSP: 0x00000140 0x00000000)\n",
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_FILTER_MASK_1)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_FILTER_MASK_2))
+    ));
+
+  MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_VC0_P_RX_Q_CTRL),   VC0_P_RX_Q_GOLDEN);
+  MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_VC0_NP_RX_Q_CTRL),  VC0_NP_RX_Q_GOLDEN);
+  MmioWrite32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_VC0_CPL_RX_Q_CTRL), VC0_CPL_RX_Q_GOLDEN);
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: VC0 credits AFTER   P=0x%08x NP=0x%08x CPL=0x%08x\n",
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_VC0_P_RX_Q_CTRL)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_VC0_NP_RX_Q_CTRL)),
+    MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_VC0_CPL_RX_Q_CTRL))
+    ));
 
   //
   // Root complex config: BARs, bus numbers and the command register. Without
@@ -827,7 +902,8 @@ A733PcieSetLinkRate (
 
   DEBUG ((
     DEBUG_ERROR,
-    "SunxiPcie: link configured 1 lane gen3, PORT_LINK=0x%08x WIDTH_SPEED=0x%08x\n",
+    "SunxiPcie: link configured 1 lane, target speed gen%u, PORT_LINK=0x%08x WIDTH_SPEED=0x%08x\n",
+    (UINT32)PCIE_LINK_SPEED_TARGET,
     MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_PORT_LINK_CONTROL)),
     MmioRead32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_LINK_WIDTH_SPEED_CTRL))
     ));
