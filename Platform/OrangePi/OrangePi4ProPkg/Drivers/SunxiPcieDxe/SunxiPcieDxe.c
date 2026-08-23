@@ -34,6 +34,7 @@
 **/
 
 #include <Uefi.h>
+#include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
@@ -157,6 +158,53 @@
 #define     APP_SMLH_LINK_UP          BIT0
 #define     APP_RDLH_LINK_UP          BIT1
 #define   APP_LINK_UP                 (APP_SMLH_LINK_UP | APP_RDLH_LINK_UP)
+
+//
+// Internal address translation unit. This core uses the "unroll" iATU layout,
+// where each region has its own register block at DBI + 0x300000 + n * 0x200
+// rather than the older single viewport window. The DBI resource on this SoC
+// is 0x06000000-0x0647ffff, so 0x06300000 falls inside it.
+//
+// Nothing reaches the endpoint without this. The link can be fully up, with
+// the data link layer active, and every config or memory cycle aimed at the
+// device still goes nowhere, because no outbound region maps CPU addresses
+// onto PCIe transactions. That is why the root complex came up but the drive
+// never enumerated.
+//
+// Apertures come from the working Linux boot, which reports:
+//     22000000-27ffffff : pcie@6000000
+//       22100000-221fffff : PCI Bus 0000:01
+//         22100000-22103fff : 0000:01:00.0 -> nvme
+//       22200000-2220ffff : 0000:00:00.0   -> config window
+//
+#define A733_PCIE_ATU_BASE            (A733_PCIE_DBI_BASE + 0x300000ULL)
+#define   ATU_REGION_STRIDE           0x200
+#define   ATU_REGION_CTRL1            0x00
+#define     ATU_TYPE_MEM              0x0
+#define     ATU_TYPE_CFG0             0x4
+#define   ATU_REGION_CTRL2            0x04
+#define     ATU_REGION_ENABLE         BIT31
+#define   ATU_LOWER_BASE              0x08
+#define   ATU_UPPER_BASE              0x0C
+#define   ATU_LIMIT                   0x10
+#define   ATU_LOWER_TARGET            0x14
+#define   ATU_UPPER_TARGET            0x18
+
+//
+// Region 0 maps the config window onto bus 1. The PCIe target address for a
+// config cycle is bus << 24 | device << 19 | function << 16, so bus 1 device 0
+// function 0 is 0x01000000.
+//
+#define A733_PCIE_CFG_BASE            0x22200000ULL
+#define A733_PCIE_CFG_SIZE            0x00010000ULL
+#define A733_PCIE_CFG_TARGET_BUS1     0x01000000U
+
+//
+// Region 1 maps memory behind the bridge one to one, which is what the BSP
+// does and what keeps BAR values meaningful on both sides.
+//
+#define A733_PCIE_MEM_BASE            0x22100000ULL
+#define A733_PCIE_MEM_SIZE            0x00100000ULL
 
 //
 // DesignWare link configuration, in DBI. The core has to be told the lane
@@ -910,6 +958,113 @@ A733PcieSetLinkRate (
 }
 
 /**
+  Program one outbound iATU region.
+**/
+STATIC
+VOID
+A733PcieAtuOutbound (
+  IN UINT32  Index,
+  IN UINT32  Type,
+  IN UINT64  CpuBase,
+  IN UINT64  Size,
+  IN UINT64  PciTarget
+  )
+{
+  UINTN   Base;
+  UINT32  Limit;
+
+  Base  = (UINTN)(A733_PCIE_ATU_BASE + (Index * ATU_REGION_STRIDE));
+  Limit = (UINT32)(CpuBase + Size - 1);
+
+  MmioWrite32 (Base + ATU_LOWER_BASE,   (UINT32)CpuBase);
+  MmioWrite32 (Base + ATU_UPPER_BASE,   (UINT32)RShiftU64 (CpuBase, 32));
+  MmioWrite32 (Base + ATU_LIMIT,        Limit);
+  MmioWrite32 (Base + ATU_LOWER_TARGET, (UINT32)PciTarget);
+  MmioWrite32 (Base + ATU_UPPER_TARGET, (UINT32)RShiftU64 (PciTarget, 32));
+  MmioWrite32 (Base + ATU_REGION_CTRL1, Type);
+  MmioWrite32 (Base + ATU_REGION_CTRL2, ATU_REGION_ENABLE);
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: iATU%u type %u cpu 0x%lx size 0x%lx -> pci 0x%lx ctrl2=0x%08x\n",
+    Index,
+    Type,
+    CpuBase,
+    Size,
+    PciTarget,
+    MmioRead32 (Base + ATU_REGION_CTRL2)
+    ));
+}
+
+/**
+  Set up address translation and prove it works by reading the endpoint's
+  config space.
+
+  A successful read here is the whole point: it means a CPU access to the
+  config window was translated into a real config cycle, crossed the link and
+  came back with the device answering. If this prints the drive's vendor and
+  device id, then everything left is EDK2 plumbing -- a host bridge and
+  PciBusDxe -- rather than anything to do with the hardware.
+**/
+STATIC
+VOID
+A733PcieSetupAtu (
+  VOID
+  )
+{
+  UINT32  Id;
+  UINT32  ClassRev;
+
+  A733PcieAtuOutbound (
+    0,
+    ATU_TYPE_CFG0,
+    A733_PCIE_CFG_BASE,
+    A733_PCIE_CFG_SIZE,
+    A733_PCIE_CFG_TARGET_BUS1
+    );
+
+  A733PcieAtuOutbound (
+    1,
+    ATU_TYPE_MEM,
+    A733_PCIE_MEM_BASE,
+    A733_PCIE_MEM_SIZE,
+    A733_PCIE_MEM_BASE
+    );
+
+  //
+  // The root port's secondary and subordinate bus numbers have to say bus 1
+  // lives behind it, or a config cycle aimed at bus 1 is dropped by the bridge.
+  //
+  MmioOr32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_MISC_CONTROL_1_CFG), DBI_RO_WR_EN);
+  MmioAndThenOr32 (
+    (UINTN)(A733_PCIE_DBI_BASE + DBI_PRIMARY_BUS),
+    0xFF000000,
+    RC_BUS_NUMBERS
+    );
+  MmioAnd32 ((UINTN)(A733_PCIE_DBI_BASE + DBI_MISC_CONTROL_1_CFG), (UINT32)~DBI_RO_WR_EN);
+
+  Id       = MmioRead32 ((UINTN)A733_PCIE_CFG_BASE);
+  ClassRev = MmioRead32 ((UINTN)(A733_PCIE_CFG_BASE + 0x08));
+
+  if (Id == 0xFFFFFFFF || Id == 0x00000000) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "SunxiPcie: endpoint config read gave 0x%08x -- nothing answering yet\n",
+      Id
+      ));
+    return;
+  }
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: ENDPOINT FOUND vendor 0x%04x device 0x%04x class 0x%06x\n",
+    Id & 0xFFFF,
+    (Id >> 16) & 0xFFFF,
+    ClassRev >> 8
+    ));
+}
+
+/**
   Walk the extended capability list looking for one id.
 **/
 STATIC
@@ -1386,6 +1541,8 @@ SunxiPcieDxeEntry (
     "SunxiPcie: DBI vendor/device = 0x%08x\n",
     MmioRead32 ((UINTN)A733_PCIE_DBI_BASE)
     ));
+
+  A733PcieSetupAtu ();
 
   DEBUG ((DEBUG_ERROR, "SunxiPcie: root complex is up\n"));
   return EFI_SUCCESS;
