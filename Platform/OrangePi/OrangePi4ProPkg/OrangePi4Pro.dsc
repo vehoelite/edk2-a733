@@ -130,6 +130,7 @@
 
   # NVVariable
   AuthVariableLib|MdeModulePkg/Library/AuthVariableLibNull/AuthVariableLibNull.inf
+  FileExplorerLib|MdeModulePkg/Library/FileExplorerLib/FileExplorerLib.inf
   VarCheckLib|MdeModulePkg/Library/VarCheckLib/VarCheckLib.inf
   TpmMeasurementLib|MdeModulePkg/Library/TpmMeasurementLibNull/TpmMeasurementLibNull.inf
 
@@ -440,6 +441,27 @@
   MdeModulePkg/Application/UiApp/UiApp.inf {
     <LibraryClasses>
       PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+      #
+      # The Front Page is built from NULL library instances, which the platform
+      # has to supply -- UiApp.inf does not pull them in itself. Without these
+      # three, Setup comes up essentially empty: the forms engine is running
+      # but nothing has registered any pages with it.
+      #
+      #   Device Manager            - devices and their HII configuration forms
+      #   Boot Manager              - pick a boot option now
+      #   Boot Maintenance Manager  - add, remove and reorder boot options,
+      #                               set the timeout, choose console devices
+      #
+      # Note that boot options edited here do not survive a reboot yet:
+      # PcdEmuVariableNvModeEnable is TRUE, so the variable store is RAM
+      # backed. Persisting them needs a real FVB driver over the SPI NOR plus
+      # FaultTolerantWriteDxe. That is also the prerequisite for Secure Boot,
+      # which additionally needs the real AuthVariableLib instead of the Null
+      # one, and SecurityPkg's SecureBootConfigDxe.
+      #
+      NULL|MdeModulePkg/Library/DeviceManagerUiLib/DeviceManagerUiLib.inf
+      NULL|MdeModulePkg/Library/BootManagerUiLib/BootManagerUiLib.inf
+      NULL|MdeModulePkg/Library/BootMaintenanceManagerUiLib/BootMaintenanceManagerUiLib.inf
   }
   MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
   MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf {

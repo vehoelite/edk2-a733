@@ -23,6 +23,7 @@
 #include <Protocol/LoadedImage.h>
 #include <Protocol/FirmwareVolume2.h>
 #include <Protocol/GraphicsOutput.h>
+#include <Protocol/BlockIo.h>
 #include <Guid/SerialPortLibVendor.h>
 #include <Guid/GlobalVariable.h>
 #include <Guid/EventGroup.h>
@@ -341,6 +342,53 @@ PlatformBootManagerAfterConsole (
   // removable media containing \EFI\BOOT\BOOTAA64.EFI (the UEFI fallback path).
   //
   EfiBootManagerConnectAll ();
+
+  //
+  // Connect the block devices a second time, explicitly.
+  //
+  // EfiBootManagerConnectAll works from a snapshot of the handle database. The
+  // NVMe namespace handle does not exist when that snapshot is taken -- it is
+  // created as a child of the controller during the pass itself -- so nothing
+  // ever calls ConnectController on it, and PartitionDxe never gets the chance
+  // to bind. The symptom is a boot option pointing at the raw device with no
+  // file path on it, and no filesystem, even though the drive was found and
+  // NvmExpressDxe reported its model, serial and capacity quite happily.
+  //
+  // Walking the BlockIo handles afterwards picks up anything that appeared
+  // during the first pass. This matters for USB mass storage for the same
+  // reason, so it is not NVMe specific.
+  //
+  {
+    EFI_STATUS  ConnectStatus;
+    EFI_HANDLE  *BlockIoHandles;
+    UINTN       BlockIoCount;
+    UINTN       BlockIoIndex;
+
+    BlockIoHandles = NULL;
+    BlockIoCount   = 0;
+
+    ConnectStatus = gBS->LocateHandleBuffer (
+                           ByProtocol,
+                           &gEfiBlockIoProtocolGuid,
+                           NULL,
+                           &BlockIoCount,
+                           &BlockIoHandles
+                           );
+    if (!EFI_ERROR (ConnectStatus) && (BlockIoHandles != NULL)) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "PlatformBds: reconnecting %u block device(s)\n",
+        (UINT32)BlockIoCount
+        ));
+      for (BlockIoIndex = 0; BlockIoIndex < BlockIoCount; BlockIoIndex++) {
+        gBS->ConnectController (BlockIoHandles[BlockIoIndex], NULL, NULL, TRUE);
+      }
+      FreePool (BlockIoHandles);
+    } else {
+      DEBUG ((DEBUG_ERROR, "PlatformBds: no block devices to reconnect\n"));
+    }
+  }
+
   EfiBootManagerRefreshAllBootOption ();
 
   //
