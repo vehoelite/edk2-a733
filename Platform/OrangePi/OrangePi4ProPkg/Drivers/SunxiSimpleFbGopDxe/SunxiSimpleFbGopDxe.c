@@ -247,6 +247,57 @@ SunxiSimpleFbGopEntry (
     return EFI_UNSUPPORTED;
   }
 
+
+  //
+  // Reserve the framebuffer, or the boot loader will allocate on top of it.
+  //
+  // Nothing here previously claimed these pages, so as far as the UEFI
+  // allocator was concerned the framebuffer was ordinary free memory. Loading
+  // anything large -- a distro's shim and kernel, for instance -- would place
+  // the image straight over the scanout buffer. The visible symptom is a
+  // screenful of garbage pixels, which is the binary's own bytes being
+  // displayed, followed immediately by a crash as code and scanout fight over
+  // the same RAM. That is exactly what booting an Ubuntu image off NVMe did:
+  // pixel noise, then black, then a repeating exception dump with a faulting
+  // PC in this very region, and not one line of output from the boot loader.
+  //
+  // EfiReservedMemoryType keeps it out of the allocator's hands and leaves it
+  // reserved in the memory map handed to the operating system, which is what
+  // the OS needs in order to keep using the framebuffer the GOP advertised.
+  //
+  {
+    EFI_PHYSICAL_ADDRESS  FbPages;
+    UINTN                 FbPageCount;
+    EFI_STATUS            FbStatus;
+
+    FbPages     = (EFI_PHYSICAL_ADDRESS)FbBase;
+    FbPageCount = EFI_SIZE_TO_PAGES ((UINTN)(Width * Height * 4));
+
+    FbStatus = gBS->AllocatePages (
+                      AllocateAddress,
+                      EfiReservedMemoryType,
+                      FbPageCount,
+                      &FbPages
+                      );
+    DEBUG ((
+      DEBUG_ERROR,
+      "SunxiSimpleFbGop: reserving framebuffer 0x%lx, %u pages: %r\n",
+      FbBase,
+      (UINT32)FbPageCount,
+      FbStatus
+      ));
+    if (EFI_ERROR (FbStatus)) {
+      //
+      // Already allocated by something else, or outside the map. Say so
+      // loudly rather than carrying on and corrupting the display later.
+      //
+      DEBUG ((
+        DEBUG_ERROR,
+        "SunxiSimpleFbGop: WARNING framebuffer is NOT reserved -- a loader may "
+        "allocate over it\n"
+        ));
+    }
+  }
   ZeroMem (&mModeInfo, sizeof (mModeInfo));
   mModeInfo.Version              = 0;
   mModeInfo.HorizontalResolution = Width;
