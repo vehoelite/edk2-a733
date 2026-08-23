@@ -35,6 +35,7 @@
 
 #include <Uefi.h>
 #include <Library/BaseLib.h>
+#include <Library/NonDiscoverableDeviceRegistrationLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
@@ -205,6 +206,20 @@
 //
 #define A733_PCIE_MEM_BASE            0x22100000ULL
 #define A733_PCIE_MEM_SIZE            0x00100000ULL
+
+//
+// Endpoint config space, reached through the CFG0 window above.
+//
+#define EP_COMMAND                    0x04
+#define   EP_CMD_MEMORY               BIT1
+#define   EP_CMD_BUS_MASTER           BIT2
+#define EP_BAR0                       0x10
+#define EP_BAR1                       0x14
+//
+// The controller register block is 16 KB, which matches what Linux reports for
+// this drive: 22100000-22103fff : 0000:01:00.0 -> nvme.
+//
+#define EP_NVME_BAR_SIZE              0x00004000ULL
 
 //
 // DesignWare link configuration, in DBI. The core has to be told the lane
@@ -958,6 +973,76 @@ A733PcieSetLinkRate (
 }
 
 /**
+  Give the endpoint a BAR, switch it on, and hand it to the NVMe driver.
+
+  There is no PciHostBridge or PciBusDxe in this platform, so nothing performs
+  normal PCI enumeration and nothing produces the PciIo protocol that
+  NvmExpressDxe binds to. Rather than bring up the whole generic PCI stack,
+  this follows the pattern SunxiUsbDxe already uses for the USB controllers:
+  configure the device by hand and register it as a non-discoverable MMIO
+  device, which makes NonDiscoverablePciDeviceDxe synthesise the PciIo that
+  NvmExpressDxe needs.
+
+  The BAR is placed at the same address Linux uses, and the memory region is
+  already mapped one to one by outbound iATU region 1, so the address the CPU
+  issues and the address on the bus agree.
+**/
+STATIC
+VOID
+A733PcieRegisterNvme (
+  VOID
+  )
+{
+  EFI_STATUS  Status;
+  UINT32      Bar0;
+  UINT32      Command;
+
+  //
+  // NVMe BAR0 is a 64-bit memory BAR, so the low half takes the address and
+  // the high half takes zero. Bits 3:0 are read-only type bits and are masked
+  // out of the value we write back.
+  //
+  MmioWrite32 ((UINTN)(A733_PCIE_CFG_BASE + EP_BAR0), (UINT32)A733_PCIE_MEM_BASE);
+  MmioWrite32 ((UINTN)(A733_PCIE_CFG_BASE + EP_BAR1), 0);
+
+  MmioOr32 (
+    (UINTN)(A733_PCIE_CFG_BASE + EP_COMMAND),
+    EP_CMD_MEMORY | EP_CMD_BUS_MASTER
+    );
+
+  Bar0    = MmioRead32 ((UINTN)(A733_PCIE_CFG_BASE + EP_BAR0));
+  Command = MmioRead32 ((UINTN)(A733_PCIE_CFG_BASE + EP_COMMAND));
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: endpoint BAR0=0x%08x command=0x%04x\n",
+    Bar0,
+    Command & 0xFFFF
+    ));
+
+  //
+  // Read the controller capability register through the BAR we just programmed.
+  // A sane value here means memory cycles are reaching the device, not just
+  // config cycles, which is a different path through the iATU.
+  //
+  DEBUG ((
+    DEBUG_ERROR,
+    "SunxiPcie: NVMe CAP low=0x%08x VS=0x%08x\n",
+    MmioRead32 ((UINTN)A733_PCIE_MEM_BASE),
+    MmioRead32 ((UINTN)(A733_PCIE_MEM_BASE + 0x08))
+    ));
+
+  Status = RegisterNonDiscoverableMmioDevice (
+             NonDiscoverableDeviceTypeNvme,
+             NonDiscoverableDeviceDmaTypeNonCoherent,
+             NULL, NULL, 1,
+             A733_PCIE_MEM_BASE, EP_NVME_BAR_SIZE
+             );
+
+  DEBUG ((DEBUG_ERROR, "SunxiPcie: NVMe register: %r\n", Status));
+}
+
+/**
   Program one outbound iATU region.
 **/
 STATIC
@@ -1062,6 +1147,19 @@ A733PcieSetupAtu (
     (Id >> 16) & 0xFFFF,
     ClassRev >> 8
     ));
+
+  //
+  // Class 0x0108xx is a non-volatile memory controller. Only hand it to the
+  // NVMe driver if that is actually what is in the slot.
+  //
+  if ((ClassRev >> 16) == 0x0108) {
+    A733PcieRegisterNvme ();
+  } else {
+    DEBUG ((
+      DEBUG_ERROR,
+      "SunxiPcie: endpoint is not an NVMe controller, leaving it alone\n"
+      ));
+  }
 }
 
 /**
