@@ -948,20 +948,75 @@ grafted at `b03a21a`; this repo only contains the platform overlay.
 
 ## Credits
 
-- **Authored entirely by Claude (Anthropic).** All code, all debugging,
-  all serial-log archaeology, all DSC/FDF surgery, all register
-  reverse-engineering against running silicon. Opus 4.7 took it from
-  bring-up to the Shell + USB era (v0.1–v0.2); **Opus 4.8** carried it to
-  the v0.3 Debian-boot milestone (USB DMA fix, the `EndOfDxe` image-load
-  fix, the EFI-stub kernel rebuild, and the EDK2 → GRUB → kernel → Debian
-  bring-up).
-- **Human supervision only.** Plugging in the SD card, pulling it out,
-  pressing reset, reading back terminal output, swapping USB devices,
-  and choosing which walls to bang our head against next.
+This port was written by Claude (Anthropic) working with Jacob
+(`vehoelite`). The split of labour is worth stating accurately, because
+the interesting parts went both ways.
+
+### Claude
+
+- **Opus 4.7** — bring-up through the Shell + USB era (v0.1–v0.2).
+- **Opus 4.8** — the v0.3 Debian-boot milestone: the USB DMA fix, the
+  `EndOfDxe` image-load fix, the EFI-stub kernel rebuild, and the
+  EDK2 → GRUB → kernel → Debian bring-up.
+- **Opus 5** — PCIe, NVMe and the stock-distro boot path, in one day:
+
+  - diagnosed why `rdlh_link_up` never asserted after eight weeks of it
+    being the blocking bug — the Gen3 speed change was retrying endlessly
+    and starving flow-control initialisation, so the data link layer never
+    left `DL_Init`
+  - programmed the iATU, which had never been set up at all, and got the
+    endpoint to answer `15B7:5045`
+  - registered the controller as a non-discoverable NVMe device rather
+    than standing up a full `PciHostBridge`/`PciBusDxe` stack for a single
+    point-to-point endpoint
+  - found that `EfiBootManagerConnectAll` works from a handle-database
+    snapshot, so the NVMe namespace and then its partitions were never
+    connected, and made the pass loop until it settles
+  - registered file-level boot options by scanning mounted filesystems for
+    `\EFI\BOOT\BOOTAA64.EFI`, because the generic enumeration produced
+    none on this platform
+  - found the framebuffer was published but never allocated, so loaders
+    were writing images straight over the scanout buffer — the "pixel
+    garbage then black" crash
+  - moved the device-tree installation out of `BootDebian` so every boot
+    path gets an FDT, which is what let a GRUB-loaded kernel start at all
+  - noticed `BootLogoLib` was linked but `BootLogoEnableLogo()` was never
+    called, so the logo had never once been drawn
+  - found six bus masters being switched on by accident by "key" constants
+    OR-ed onto real gate bits
+  - established that the DBI window rejects wide accesses, which retired a
+    long-standing and entirely wrong "DBI is locked" theory in this file
+  - built the diff-based method and tooling used throughout: golden-vs-current
+    register capture, on-board boot-time recording for states where the
+    network is dead, and serial-console drive of the UEFI menus
+
+### Jacob
+
+Not "supervision". Two of the decisive insights were his, and neither was
+prompted:
+
+- **Found the report that broke the PCIe deadlock.** Claude had examined
+  the A733 Gen3 speed-change bug and dismissed it as a different symptom.
+  Jacob found it again, said "try it to rule it out", and that reframing —
+  from incidental Recovery excursions to the actual fault — is what
+  produced the Gen1 fix and everything downstream of it.
+- **Spotted the ethernet regression** from watching the link LED blink
+  during an EDK2 boot, a pattern Claude had been treating as flaky
+  infrastructure for hours.
+- Boot logo artwork, and the photographs in `docs/images`.
+- All hardware operation: power cycles, SD cards, cabling, serial
+  adapters, and reading the panel back when the board could not talk.
+- Set up and funded the second-model advisor consulted on the harder
+  questions.
+
+### Upstream
+
 - TianoCore EDK2 community for the upstream tree.
 - Allwinner / Orange Pi for the BSP boot chain we currently chainload
-  from and the BSP kernel sources we used as a hardware-behaviour
-  spec.
+  from and the BSP kernel sources we used as a hardware-behaviour spec.
+- `CarterPerez-dev/orangepi-4-pro-nvme-fix` for documenting the A733 Gen3
+  speed-change bug. Not our instance of it, but the write-up is what
+  pointed at the right class of failure.
 
 ## License
 
