@@ -26,6 +26,7 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Library/BaseLib.h>
+#include <Guid/FileInfo.h>
 #include <Guid/SerialPortLibVendor.h>
 #include <Guid/GlobalVariable.h>
 #include <Guid/EventGroup.h>
@@ -240,6 +241,178 @@ RegisterFvBootOption (
 
   FreePool (Handles);
   return EFI_NOT_FOUND;
+}
+
+/**
+  Publish the device tree so that any EFI boot path gets one.
+
+  An arm64 Linux kernel needs a device tree, and the EFI stub looks for it in
+  the FDT configuration table. Until now the only thing that installed one was
+  BootDebian, our own hand-off driver, which reads \\board.dtb and publishes it
+  on its way to booting. That works for exactly one boot path.
+
+  Anything else -- GRUB, shim, a distro image, booting an application from the
+  Shell -- got no device tree at all. The kernel then dies immediately, before
+  it has a console to complain on, so the machine simply goes black. That is
+  what booting an Ubuntu image from NVMe did: GRUB came up fine, the kernel was
+  loaded, and then nothing, with no output on any console.
+
+  Installing it here instead means every boot option inherits it. Scans all
+  filesystems rather than assuming a particular volume, since the file has
+  lived on both USB and SD at different times.
+**/
+STATIC
+VOID
+InstallPlatformFdt (
+  VOID
+  )
+{
+  EFI_GUID  FdtTableGuid = {
+    0xb1b621d5, 0xf19c, 0x41a5, { 0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0 }
+  };
+
+  EFI_STATUS                       Status;
+  EFI_HANDLE                       *Handles;
+  UINTN                            HandleCount;
+  UINTN                            Index;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+  EFI_FILE_INFO                    *Info;
+  UINTN                            InfoSize;
+  UINTN                            DtbSize;
+  EFI_PHYSICAL_ADDRESS             DtbAddr;
+  VOID                             *Existing;
+
+  //
+  // If something already published one, leave it alone.
+  //
+  Existing = NULL;
+  if (!EFI_ERROR (EfiGetSystemConfigurationTable (&FdtTableGuid, &Existing)) &&
+      (Existing != NULL))
+  {
+    DEBUG ((DEBUG_ERROR, "PlatformBds: FDT already installed at 0x%p\n", Existing));
+    return;
+  }
+
+  Handles     = NULL;
+  HandleCount = 0;
+
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiSimpleFileSystemProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status) || (Handles == NULL)) {
+    DEBUG ((DEBUG_ERROR, "PlatformBds: no filesystems to search for board.dtb\n"));
+    return;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiSimpleFileSystemProtocolGuid,
+                    (VOID **)&Fs
+                    );
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    Root = NULL;
+    if (EFI_ERROR (Fs->OpenVolume (Fs, &Root)) || (Root == NULL)) {
+      continue;
+    }
+
+    File = NULL;
+    if (EFI_ERROR (Root->Open (Root, &File, L"\\board.dtb", EFI_FILE_MODE_READ, 0)) ||
+        (File == NULL))
+    {
+      Root->Close (Root);
+      continue;
+    }
+
+    //
+    // Size the file.
+    //
+    InfoSize = 0;
+    Status   = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, NULL);
+    if (Status != EFI_BUFFER_TOO_SMALL) {
+      File->Close (File);
+      Root->Close (Root);
+      continue;
+    }
+
+    Info = AllocatePool (InfoSize);
+    if (Info == NULL) {
+      File->Close (File);
+      Root->Close (Root);
+      continue;
+    }
+
+    Status = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, Info);
+    if (EFI_ERROR (Status)) {
+      FreePool (Info);
+      File->Close (File);
+      Root->Close (Root);
+      continue;
+    }
+
+    DtbSize = (UINTN)Info->FileSize;
+    FreePool (Info);
+
+    //
+    // EfiACPIReclaimMemory so the table survives ExitBootServices into the
+    // kernel, which is the same choice BootDebian makes.
+    //
+    DtbAddr = 0;
+    Status  = gBS->AllocatePages (
+                     AllocateAnyPages,
+                     EfiACPIReclaimMemory,
+                     EFI_SIZE_TO_PAGES (DtbSize),
+                     &DtbAddr
+                     );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "PlatformBds: AllocatePages(DTB) failed: %r\n", Status));
+      File->Close (File);
+      Root->Close (Root);
+      break;
+    }
+
+    Status = File->Read (File, &DtbSize, (VOID *)(UINTN)DtbAddr);
+    File->Close (File);
+    Root->Close (Root);
+
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "PlatformBds: read board.dtb failed: %r\n", Status));
+      gBS->FreePages (DtbAddr, EFI_SIZE_TO_PAGES (DtbSize));
+      break;
+    }
+
+    Status = gBS->InstallConfigurationTable (&FdtTableGuid, (VOID *)(UINTN)DtbAddr);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "PlatformBds: InstallConfigurationTable(FDT) failed: %r\n", Status));
+      gBS->FreePages (DtbAddr, EFI_SIZE_TO_PAGES (DtbSize));
+      break;
+    }
+
+    DEBUG ((
+      DEBUG_ERROR,
+      "PlatformBds: FDT installed from board.dtb @ 0x%lx (%u bytes)\n",
+      DtbAddr,
+      (UINT32)DtbSize
+      ));
+    FreePool (Handles);
+    return;
+  }
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "PlatformBds: WARNING no board.dtb found -- an arm64 kernel booted by GRUB "
+    "or shim will get no device tree and will die silently\n"
+    ));
+  FreePool (Handles);
 }
 
 /**
@@ -582,6 +755,8 @@ PlatformBootManagerAfterConsole (
   }
 
   EfiBootManagerRefreshAllBootOption ();
+
+  InstallPlatformFdt ();
 
   RegisterEspBootOptions ();
 
