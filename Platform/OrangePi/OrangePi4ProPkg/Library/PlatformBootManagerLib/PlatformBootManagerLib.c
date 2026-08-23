@@ -27,6 +27,7 @@
 #include <Protocol/SimpleFileSystem.h>
 #include <Library/BaseLib.h>
 #include <Guid/FileInfo.h>
+#include <Library/BootLogoLib.h>
 #include <Guid/SerialPortLibVendor.h>
 #include <Guid/GlobalVariable.h>
 #include <Guid/EventGroup.h>
@@ -852,6 +853,22 @@ PlatformBootManagerAfterConsole (
       EfiBootManagerFreeLoadOption (&BootMenu);
     }
     (VOID)UiAppGuid;
+  }
+
+  //
+  // Draw the logo last, so it is what remains on screen through the timeout.
+  //
+  // BootLogoLib has been in the DSC and in this library's INF all along, but
+  // nothing ever called it, so the bitmap sat in the firmware published through
+  // HII and was never once drawn. Everything above prints to both the panel and
+  // the serial console; the serial copy is the one that matters for debugging,
+  // and the logo covers the text on the panel.
+  //
+  {
+    EFI_STATUS  LogoStatus;
+
+    LogoStatus = BootLogoEnableLogo ();
+    DEBUG ((DEBUG_ERROR, "PlatformBds: boot logo: %r\n", LogoStatus));
   }
 }
 
