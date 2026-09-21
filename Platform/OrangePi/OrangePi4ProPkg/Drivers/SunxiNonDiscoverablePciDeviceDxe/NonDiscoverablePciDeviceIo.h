@@ -100,6 +100,25 @@ typedef struct {
   // may change when disconnecting/reconnecting the driver.
   //
   UINTN                      UniqueId;
+  //
+  // Allwinner A733 (sun60iw2) PCIe DesignWare RC quirk: the RC has a
+  // HW-fixed 0x20000000 offset between the CPU/AXI address space and the
+  // PCIe wire address space (see BSP pcie-sunxi-rc.c, PCIE_CPU_BASE).
+  // Outbound iATU is programmed CPU-relative; the hardware subtracts the
+  // offset on the wire. Inbound DMA from PCIe devices targets PCIe-wire
+  // addresses, so DMA buffers in CPU-DRAM at HostAddress must be exposed
+  // to the device as DeviceAddress = HostAddress - 0x20000000.
+  //
+  // This offset is PCIe-specific. Other NonDiscoverable devices on this
+  // SoC (EHCI / XHCI USB, ...) DMA identity-mapped, so we MUST scope
+  // the offset to the NVMe (PCIe) device only. See the v0.3 USB DMA
+  // regression note in README.md (Wall 1 - USB DMA cross-contamination).
+  //
+  // Set to TRUE by InitializePciIoProtocol() when Device->Type matches
+  // gEdkiiNonDiscoverableNvmeDeviceGuid; consumed by
+  // SunxiPcieCpuToDeviceAddress().
+  //
+  BOOLEAN                    NeedsPcieDmaOffset;
 } NON_DISCOVERABLE_PCI_DEVICE;
 
 /**

@@ -40,9 +40,18 @@ typedef struct {
 STATIC
 EFI_PHYSICAL_ADDRESS
 SunxiPcieCpuToDeviceAddress (
-  IN EFI_PHYSICAL_ADDRESS  HostAddress
+  IN NON_DISCOVERABLE_PCI_DEVICE  *Dev,
+  IN EFI_PHYSICAL_ADDRESS          HostAddress
   )
 {
+  //
+  // REVIVED 2026-07 (build #47, EDK2-side NVMe bring-up): the
+  // -0x20000000 CPU->PCIe-wire DMA offset is now scoped to the
+  // single PCIe-attached NVMe device via Dev->NeedsPcieDmaOffset,
+  // which InitializePciIoProtocol() sets TRUE only when Device->Type
+  // is gEdkiiNonDiscoverableNvmeDeviceGuid. USB / other MMIO devices
+  // continue to use identity DMA. See README.md, Wall 1.
+  //
   //
   // DISABLED 2026-06-02 (identity map restored). This -0x20000000 offset is a
   // property of the PCIe DesignWare RC ONLY, but this driver is the *shared*
@@ -56,12 +65,10 @@ SunxiPcieCpuToDeviceAddress (
   // own DMA path (scope it to the device whose MMIO base is 0x06000000) —
   // never here in the routine shared with USB/other MMIO devices.
   //
+  if (Dev->NeedsPcieDmaOffset && (HostAddress >= SUNXI_PCIE_DRAM_BASE)) {
+    return HostAddress - SUNXI_PCIE_CPU_BASE_OFFSET;
+  }
   return HostAddress;
-  // Original PCIe-quirk behaviour (kept for reference):
-  // if (HostAddress >= SUNXI_PCIE_DRAM_BASE) {
-  //   return HostAddress - SUNXI_PCIE_CPU_BASE_OFFSET;
-  // }
-  // return HostAddress;
 }
 
 
@@ -834,10 +841,10 @@ CoherentPciIoMap (
              );
     }
 
-    *DeviceAddress = SunxiPcieCpuToDeviceAddress (MapInfo->AllocAddress);
+    *DeviceAddress = SunxiPcieCpuToDeviceAddress (Dev, MapInfo->AllocAddress);
     *Mapping       = MapInfo;
   } else {
-    *DeviceAddress = SunxiPcieCpuToDeviceAddress ((EFI_PHYSICAL_ADDRESS)(UINTN)HostAddress);
+    *DeviceAddress = SunxiPcieCpuToDeviceAddress (Dev, (EFI_PHYSICAL_ADDRESS)(UINTN)HostAddress);
     *Mapping       = NULL;
   }
 
@@ -1411,10 +1418,10 @@ NonCoherentPciIoMap (
       gBS->CopyMem (AllocAddress, HostAddress, *NumberOfBytes);
     }
 
-    *DeviceAddress = SunxiPcieCpuToDeviceAddress (MapInfo->AllocAddress);
+    *DeviceAddress = SunxiPcieCpuToDeviceAddress (Dev, MapInfo->AllocAddress);
   } else {
     MapInfo->AllocAddress = 0;
-    *DeviceAddress        = SunxiPcieCpuToDeviceAddress ((EFI_PHYSICAL_ADDRESS)(UINTN)HostAddress);
+    *DeviceAddress        = SunxiPcieCpuToDeviceAddress (Dev, (EFI_PHYSICAL_ADDRESS)(UINTN)HostAddress);
 
     //
     // We are not using a bounce buffer: the mapping is sufficiently
@@ -1817,6 +1824,12 @@ InitializePciIoProtocol (
 
   InitializeListHead (&Dev->UncachedAllocationList);
 
+  //
+  // Safe default: do NOT apply the A733 PCIe -0x20000000 DMA offset.
+  // Only the NVMe branch below flips this to TRUE.
+  //
+  Dev->NeedsPcieDmaOffset = FALSE;
+
   Dev->ConfigSpace.Hdr.VendorId = PCI_ID_VENDOR_UNKNOWN;
   Dev->ConfigSpace.Hdr.DeviceId = PCI_ID_DEVICE_DONTCARE;
 
@@ -1853,6 +1866,24 @@ InitializePciIoProtocol (
     Dev->ConfigSpace.Hdr.ClassCode[1] = 0x8; // PCI_CLASS_MASS_STORAGE_NVM
     Dev->ConfigSpace.Hdr.ClassCode[2] = PCI_CLASS_MASS_STORAGE;
     Dev->BarOffset                    = 0;
+    //
+    // This is the only NonDiscoverable device on the A733 that sits
+    // behind the DesignWare PCIe RC, so it is the only one that needs
+    // the -0x20000000 CPU->PCIe-wire DMA offset in Map(). USB / SD /
+    // other MMIO controllers stay identity-mapped.
+    //
+    Dev->NeedsPcieDmaOffset           = TRUE;
+    //
+    // NVMe 1.2+ controllers all support 64-bit DMA (the WDC 0x15B7 in
+    // this rig is NVMe 1.4, see research/sun60iw2-pcie-dbi-snapshot.txt).
+    // Pre-enable EFI_PCI_IO_ATTRIBUTE_DUAL_ADDRESS_CYCLE so that
+    // CoherentPciIoAllocateBuffer uses AllocateAnyPages (no 2 GB cap)
+    // and NvmExpressDxe's AllocateBuffer / Map paths can hand 64-bit
+    // PRP addresses to the controller. Without this, the 2 GB low-DRAM
+    // cap kicks in (intended for the EHCI engine) and NvmExpressDxe's
+    // larger I/O transfers bounce / fail.
+    //
+    Dev->Attributes |= EFI_PCI_IO_ATTRIBUTE_DUAL_ADDRESS_CYCLE;
   } else if (CompareGuid (
                Dev->Device->Type,
                &gEdkiiNonDiscoverableOhciDeviceGuid
